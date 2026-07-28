@@ -20,12 +20,17 @@ type CalendarEvent = {
   description: string;
   startsAt: string;
   endsAt: string;
+  recurrenceIntervalWeeks: number | null;
+  recurrenceTimeZone: string | null;
+  recurrenceAnchorStartsAt: string;
+  occurrenceStartsAt: string;
   color: EventColor;
   createdAt: string;
   updatedAt: string;
 };
 
-type EventInput = Pick<CalendarEvent, "title" | "description" | "startsAt" | "endsAt" | "color">;
+type EventInput = Pick<CalendarEvent, "title" | "description" | "startsAt" | "endsAt" | "recurrenceIntervalWeeks" | "recurrenceTimeZone" | "color">
+  & { occurrenceStartsAt?: string };
 
 type ApiEnvelope<T> = {
   ok: boolean;
@@ -491,7 +496,7 @@ export function WeekCalendar() {
                         onPointerUp={endDrag}
                         onPointerCancel={cancelDrag}
                         onKeyDown={(keyboardEvent) => handleEventKey(event, keyboardEvent)}
-                        aria-label={`${event.title}, ${formatEventTime(event)}. Drag to reschedule, or press Enter to edit.`}
+                        aria-label={`${event.title}, ${formatEventTime(event)}.${formatRecurrenceForAria(event)} Drag to reschedule, or press Enter to edit.`}
                       >
                         <span className="event-accent" />
                         <span className="event-copy">
@@ -572,6 +577,8 @@ function EventDialog({
   const [time, setTime] = useState(initial.time);
   const [duration, setDuration] = useState(initial.duration);
   const [color, setColor] = useState<EventColor>(initial.color);
+  const [recurring, setRecurring] = useState(initial.recurrenceIntervalWeeks !== null);
+  const [recurrenceIntervalWeeks, setRecurrenceIntervalWeeks] = useState(initial.recurrenceIntervalWeeks ?? 1);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -592,6 +599,11 @@ function EventDialog({
         description: description.trim(),
         startsAt: start.toISOString(),
         endsAt: end.toISOString(),
+        recurrenceIntervalWeeks: recurring ? recurrenceIntervalWeeks : null,
+        recurrenceTimeZone: recurring
+          ? existing?.recurrenceTimeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone ?? "UTC"
+          : null,
+        ...(existing ? { occurrenceStartsAt: existing.occurrenceStartsAt } : {}),
         color
       }, existing?.id);
     } catch (submitError) {
@@ -648,6 +660,39 @@ function EventDialog({
             </label>
           </div>
 
+          <div className={`recurrence-control${recurring ? " is-enabled" : ""}`}>
+            <label className="recurrence-toggle">
+              <input
+                type="checkbox"
+                checked={recurring}
+                onChange={(event) => setRecurring(event.target.checked)}
+              />
+              <span>
+                <strong>Repeat this event</strong>
+                <small>Keep it on future weeks.</small>
+              </span>
+            </label>
+            {recurring && (
+              <label className="recurrence-frequency">
+                <span>Every</span>
+                <input
+                  aria-label="Repeat interval in weeks"
+                  type="number"
+                  min={1}
+                  max={52}
+                  step={1}
+                  value={recurrenceIntervalWeeks}
+                  onChange={(event) => setRecurrenceIntervalWeeks(clamp(Number(event.target.value) || 1, 1, 52))}
+                />
+                <span>{recurrenceIntervalWeeks === 1 ? "week" : "weeks"}</span>
+              </label>
+            )}
+          </div>
+
+          {existing?.recurrenceIntervalWeeks != null && (
+            <p className="recurrence-note">Changes and deletion apply to the entire recurring series.</p>
+          )}
+
           <label className="field field-wide">
             <span>Notes <small>optional</small></span>
             <textarea value={description} onChange={(event) => setDescription(event.target.value)} placeholder="Add a little context…" maxLength={500} rows={3} />
@@ -670,7 +715,9 @@ function EventDialog({
 
           <div className="dialog-actions">
             {existing ? (
-              <button className="delete-button" type="button" onClick={() => void remove()} disabled={busy}><Trash2 size={16} /> Delete</button>
+              <button className="delete-button" type="button" onClick={() => void remove()} disabled={busy}>
+                <Trash2 size={16} /> {existing.recurrenceIntervalWeeks === null ? "Delete" : "Delete series"}
+              </button>
             ) : <span />}
             <div>
               <button className="secondary-button" type="button" onClick={onClose} disabled={busy}>Cancel</button>
@@ -699,6 +746,9 @@ function eventPatchBody(event: CalendarEvent) {
     description: event.description,
     startsAt: event.startsAt,
     endsAt: event.endsAt,
+    recurrenceIntervalWeeks: event.recurrenceIntervalWeeks,
+    recurrenceTimeZone: event.recurrenceTimeZone,
+    occurrenceStartsAt: event.occurrenceStartsAt,
     color: event.color
   };
 }
@@ -708,6 +758,8 @@ function hasSameEditableValues(left: CalendarEvent, right: CalendarEvent) {
     && left.description === right.description
     && left.startsAt === right.startsAt
     && left.endsAt === right.endsAt
+    && left.recurrenceIntervalWeeks === right.recurrenceIntervalWeeks
+    && left.recurrenceTimeZone === right.recurrenceTimeZone
     && left.color === right.color;
 }
 
@@ -794,6 +846,13 @@ function formatEventTime(event: CalendarEvent) {
   return `${formatter.format(new Date(event.startsAt))} – ${formatter.format(new Date(event.endsAt))}`;
 }
 
+function formatRecurrenceForAria(event: CalendarEvent) {
+  if (event.recurrenceIntervalWeeks === null) return "";
+  return event.recurrenceIntervalWeeks === 1
+    ? " Repeats every week."
+    : ` Repeats every ${event.recurrenceIntervalWeeks} weeks.`;
+}
+
 function formatWeekRange(start: Date, end: Date) {
   const startText = new Intl.DateTimeFormat("en", { month: "long", day: "numeric" }).format(start);
   const endText = new Intl.DateTimeFormat("en", {
@@ -818,7 +877,15 @@ function isDateInWeek(date: Date, days: Date[]) {
 function newEventDraft(date: string) {
   const now = new Date();
   const rounded = clamp(Math.ceil(minutesOfDay(now) / SLOT_MINUTES) * SLOT_MINUTES, DAY_START, DAY_END - 60);
-  return { title: "", description: "", date, time: minutesToInput(rounded), duration: 60, color: "violet" as EventColor };
+  return {
+    title: "",
+    description: "",
+    date,
+    time: minutesToInput(rounded),
+    duration: 60,
+    recurrenceIntervalWeeks: null,
+    color: "violet" as EventColor
+  };
 }
 
 function eventToDraft(event: CalendarEvent) {
@@ -830,6 +897,7 @@ function eventToDraft(event: CalendarEvent) {
     date: dateKey(start),
     time: minutesToInput(minutesOfDay(start)),
     duration,
+    recurrenceIntervalWeeks: event.recurrenceIntervalWeeks,
     color: event.color
   };
 }

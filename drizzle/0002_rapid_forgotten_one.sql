@@ -1,0 +1,1 @@
+ALTER TABLE "calendar_events" ADD COLUMN "recurrence_time_zone" text;

@@ -8,6 +8,20 @@
       "when": 1785239079576,
       "tag": "0000_secret_inhumans",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1785269790646,
+      "tag": "0001_sparkling_spitfire",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1785270098306,
+      "tag": "0002_rapid_forgotten_one",
+      "breakpoints": true
     }
   ]
 }

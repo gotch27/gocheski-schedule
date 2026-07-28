@@ -1,0 +1,2 @@
+ALTER TABLE "calendar_events" ADD COLUMN "recurrence_interval_weeks" integer;--> statement-breakpoint
+ALTER TABLE "calendar_events" ADD CONSTRAINT "calendar_events_valid_recurrence_interval" CHECK ("calendar_events"."recurrence_interval_weeks" is null or "calendar_events"."recurrence_interval_weeks" between 1 and 52);

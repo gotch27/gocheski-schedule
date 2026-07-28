@@ -30,6 +30,8 @@ Open `http://localhost:3000`.
 - Drag an event horizontally to change its day and vertically to change its start time.
 - Drag the event's bottom grip to change its duration.
 - Placement snaps to 15-minute increments and is saved five seconds after the last move, collapsing repeated drops into one update.
+- Events can repeat every 1–52 weeks with no end date. Recurrences keep the same local clock time across daylight-saving changes.
+- Editing, dragging, resizing, or deleting a recurring occurrence applies to its entire series.
 - Click an event to edit its details or delete it.
 - Use arrow keys to move a focused event; use Shift + Up/Down to resize it.
 

@@ -8,6 +8,8 @@ const eventFields = {
   description: z.string().trim().max(500).default(""),
   startsAt: z.iso.datetime({ offset: true }),
   endsAt: z.iso.datetime({ offset: true }),
+  recurrenceIntervalWeeks: z.number().int().min(1).max(52).nullable().default(null),
+  recurrenceTimeZone: z.string().trim().min(1).max(100).nullable().default(null),
   color: eventColorSchema.default("violet")
 };
 
@@ -26,6 +28,7 @@ export const createEventInputSchema = z.object(eventFields).refine(validEventRan
 
 export const updateEventInputSchema = z.object({
   id: z.uuid(),
+  occurrenceStartsAt: z.iso.datetime({ offset: true }).optional(),
   ...eventFields
 }).refine(validEventRange, {
   message: "The event must end after it starts.",
