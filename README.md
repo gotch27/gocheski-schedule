@@ -31,7 +31,7 @@ Open `http://localhost:3000`.
 - Drag the event's bottom grip to change its duration.
 - Placement snaps to 15-minute increments and is saved five seconds after the last move, collapsing repeated drops into one update.
 - Events can repeat every 1–52 weeks with no end date. Recurrences keep the same local clock time across daylight-saving changes.
-- Editing, dragging, resizing, or deleting a recurring occurrence applies to its entire series.
+- Editing, dragging, resizing, or deleting a recurring occurrence asks whether to change only that event or the entire series.
 - Click an event to edit its details or delete it.
 - Use arrow keys to move a focused event; use Shift + Up/Down to resize it.
 
@@ -56,6 +56,7 @@ Generated SQL and schema snapshots are committed under `drizzle/`.
 - `nextsignal/processes/business/events.ts` owns reusable event operations.
 - `nextsignal/services/index.ts` contains the Drizzle event repository.
 - `db/schema.ts` defines the typed Postgres schema.
+- `calendar_event_exceptions` stores one-off edits and cancellations without duplicating recurring series.
 - `drizzle.config.ts` configures migration generation and execution.
 
 This version uses the same token authentication as `gocheski.com/admin`. It intentionally has no workers, queues, or scheduled processes.

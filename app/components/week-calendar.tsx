@@ -13,9 +13,11 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type PointerEvent as ReactPointerEvent } from "react";
 
 type EventColor = "violet" | "blue" | "coral" | "green" | "amber";
+type RecurringEventScope = "series" | "occurrence";
 
 type CalendarEvent = {
   id: string;
+  occurrenceKey: string;
   title: string;
   description: string;
   startsAt: string;
@@ -24,6 +26,7 @@ type CalendarEvent = {
   recurrenceTimeZone: string | null;
   recurrenceAnchorStartsAt: string;
   occurrenceStartsAt: string;
+  isOccurrenceOverride: boolean;
   color: EventColor;
   createdAt: string;
   updatedAt: string;
@@ -44,7 +47,7 @@ type EditorState =
 
 type DragState = {
   pointerId: number;
-  eventId: string;
+  eventKey: string;
   mode: "move" | "resize";
   original: CalendarEvent;
   current: CalendarEvent;
@@ -57,8 +60,18 @@ type DragState = {
 type PendingSave = {
   baseline: CalendarEvent;
   latest: CalendarEvent;
+  scope: RecurringEventScope;
   timer: number;
 };
+
+type PendingScopeChange = {
+  previous: CalendarEvent;
+  updated: CalendarEvent;
+};
+
+type EditorScopedAction =
+  | { kind: "save"; input: EventInput }
+  | { kind: "delete" };
 
 const DAY_START = 7 * 60;
 const DAY_END = 22 * 60;
@@ -84,7 +97,8 @@ export function WeekCalendar() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [editor, setEditor] = useState<EditorState | null>(null);
-  const [activeEventId, setActiveEventId] = useState<string | null>(null);
+  const [activeEventKey, setActiveEventKey] = useState<string | null>(null);
+  const [pendingScopeChange, setPendingScopeChange] = useState<PendingScopeChange | null>(null);
   const [now, setNow] = useState(() => new Date());
   const timelineRef = useRef<HTMLDivElement>(null);
   const dragRef = useRef<DragState | null>(null);
@@ -110,7 +124,7 @@ export function WeekCalendar() {
       });
       const data = await apiRequest<{ events: CalendarEvent[] }>(`${EVENTS_API_PATH}?${query}`);
       setEvents(data.events);
-      for (const event of data.events) persistedEventsRef.current.set(event.id, event);
+      for (const event of data.events) persistedEventsRef.current.set(event.occurrenceKey, event);
     } catch (error) {
       setEvents([]);
       setLoadError(readError(error));
@@ -141,7 +155,7 @@ export function WeekCalendar() {
         void fetch(EVENTS_API_PATH, {
           method: "PATCH",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify(eventPatchBody(pending.latest)),
+          body: JSON.stringify(eventPatchBody(pending.latest, pending.scope)),
           keepalive: true
         });
       }
@@ -164,6 +178,22 @@ export function WeekCalendar() {
     setWeekStartKey(dateKey(startOfWeek(new Date())));
   }
 
+  function applyPendingScopeChange(scope: RecurringEventScope) {
+    if (!pendingScopeChange) return;
+    scheduleEventSave(pendingScopeChange.updated, pendingScopeChange.previous, scope);
+    setPendingScopeChange(null);
+  }
+
+  function cancelPendingScopeChange() {
+    if (!pendingScopeChange) return;
+    setEvents((current) => current.map((event) =>
+      event.occurrenceKey === pendingScopeChange.previous.occurrenceKey
+        ? pendingScopeChange.previous
+        : event
+    ));
+    setPendingScopeChange(null);
+  }
+
   async function logout() {
     await fetch(LOGIN_API_PATH, { method: "DELETE" });
     window.location.replace("/schedule");
@@ -173,16 +203,20 @@ export function WeekCalendar() {
     setEditor({ mode: "create", date });
   }
 
-  async function saveFromEditor(input: EventInput, id?: string) {
-    if (id) {
-      const previous = events.find((event) => event.id === id);
+  async function saveFromEditor(
+    input: EventInput,
+    existing?: CalendarEvent,
+    scope: RecurringEventScope = "series"
+  ) {
+    if (existing) {
+      const previous = events.find((event) => event.occurrenceKey === existing.occurrenceKey);
       if (!previous) return;
       const optimistic = { ...previous, ...input };
-      const pending = cancelScheduledSave(id);
-      const rollback = persistedEventsRef.current.get(id) ?? pending?.baseline ?? previous;
-      setEvents((current) => current.map((event) => event.id === id ? optimistic : event));
-      await persistEvent(optimistic, rollback);
-      setNotice("Event updated");
+      const pending = cancelScheduledSave(existing.occurrenceKey);
+      const rollback = persistedEventsRef.current.get(existing.occurrenceKey) ?? pending?.baseline ?? previous;
+      setEvents((current) => current.map((event) => event.occurrenceKey === existing.occurrenceKey ? optimistic : event));
+      await persistEvent(optimistic, rollback, scope);
+      setNotice(scope === "occurrence" ? "Event updated" : "Series updated");
     } else {
       const data = await apiRequest<{ event: CalendarEvent }>(EVENTS_API_PATH, {
         method: "POST",
@@ -195,47 +229,61 @@ export function WeekCalendar() {
       } else {
         setEvents((current) => [...current, data.event].sort(compareEvents));
       }
-      persistedEventsRef.current.set(data.event.id, data.event);
+      persistedEventsRef.current.set(data.event.occurrenceKey, data.event);
       setNotice("Event created");
     }
     setEditor(null);
   }
 
-  async function deleteFromEditor(id: string) {
-    const pending = cancelScheduledSave(id);
+  async function deleteFromEditor(event: CalendarEvent, scope: RecurringEventScope = "series") {
+    const pending = cancelScheduledSave(event.occurrenceKey);
     try {
       await apiRequest<{ id: string }>(EVENTS_API_PATH, {
         method: "DELETE",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ id })
+        body: JSON.stringify({
+          id: event.id,
+          occurrenceStartsAt: event.occurrenceStartsAt,
+          scope
+        })
       });
     } catch (error) {
-      if (pending) scheduleEventSave(pending.latest, pending.baseline);
+      if (pending) scheduleEventSave(pending.latest, pending.baseline, pending.scope);
       throw error;
     }
-    persistedEventsRef.current.delete(id);
-    setEvents((current) => current.filter((event) => event.id !== id));
+    if (scope === "series") {
+      for (const [key, persisted] of persistedEventsRef.current) {
+        if (persisted.id === event.id) persistedEventsRef.current.delete(key);
+      }
+      setEvents((current) => current.filter((item) => item.id !== event.id));
+    } else {
+      persistedEventsRef.current.delete(event.occurrenceKey);
+      setEvents((current) => current.filter((item) => item.occurrenceKey !== event.occurrenceKey));
+    }
     setEditor(null);
-    setNotice("Event deleted");
+    setNotice(scope === "occurrence" ? "Event deleted" : "Series deleted");
   }
 
-  async function persistEvent(updated: CalendarEvent, previous: CalendarEvent) {
+  async function persistEvent(updated: CalendarEvent, previous: CalendarEvent, scope: RecurringEventScope) {
+    const eventKey = updated.occurrenceKey;
     try {
       const data = await apiRequest<{ event: CalendarEvent }>(EVENTS_API_PATH, {
         method: "PATCH",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify(eventPatchBody(updated))
+        body: JSON.stringify(eventPatchBody(updated, scope))
       });
-      persistedEventsRef.current.set(updated.id, data.event);
-      const pending = pendingSavesRef.current.get(updated.id);
-      if (pending) pendingSavesRef.current.set(updated.id, { ...pending, baseline: data.event });
+      persistedEventsRef.current.delete(eventKey);
+      persistedEventsRef.current.set(data.event.occurrenceKey, data.event);
+      const pending = pendingSavesRef.current.get(eventKey);
+      if (pending) pendingSavesRef.current.set(eventKey, { ...pending, baseline: data.event });
       setEvents((current) => current.map((event) => {
-        if (event.id !== updated.id) return event;
+        if (event.occurrenceKey !== eventKey) return event;
         return hasSameEditableValues(event, updated) ? data.event : event;
       }).sort(compareEvents));
+      if (scope === "series") void loadEvents();
     } catch (error) {
       setEvents((current) => current.map((event) => {
-        if (event.id !== previous.id) return event;
+        if (event.occurrenceKey !== previous.occurrenceKey) return event;
         return hasSameEditableValues(event, updated) ? previous : event;
       }));
       setNotice(readError(error));
@@ -243,29 +291,34 @@ export function WeekCalendar() {
     }
   }
 
-  function scheduleEventSave(updated: CalendarEvent, fallbackBaseline: CalendarEvent) {
-    const existing = pendingSavesRef.current.get(updated.id);
+  function scheduleEventSave(
+    updated: CalendarEvent,
+    fallbackBaseline: CalendarEvent,
+    scope: RecurringEventScope
+  ) {
+    const eventKey = updated.occurrenceKey;
+    const existing = pendingSavesRef.current.get(eventKey);
     if (existing) window.clearTimeout(existing.timer);
 
-    const baseline = existing?.baseline ?? persistedEventsRef.current.get(updated.id) ?? fallbackBaseline;
+    const baseline = existing?.baseline ?? persistedEventsRef.current.get(eventKey) ?? fallbackBaseline;
     const timer = window.setTimeout(() => {
-      const pending = pendingSavesRef.current.get(updated.id);
+      const pending = pendingSavesRef.current.get(eventKey);
       if (!pending || pending.timer !== timer) return;
 
-      pendingSavesRef.current.delete(updated.id);
-      void persistEvent(pending.latest, pending.baseline)
+      pendingSavesRef.current.delete(eventKey);
+      void persistEvent(pending.latest, pending.baseline, pending.scope)
         .catch(() => undefined);
     }, SAVE_DELAY_MS);
 
-    pendingSavesRef.current.set(updated.id, { baseline, latest: updated, timer });
+    pendingSavesRef.current.set(eventKey, { baseline, latest: updated, scope, timer });
   }
 
-  function cancelScheduledSave(id: string) {
-    const pending = pendingSavesRef.current.get(id);
+  function cancelScheduledSave(eventKey: string) {
+    const pending = pendingSavesRef.current.get(eventKey);
     if (!pending) return undefined;
 
     window.clearTimeout(pending.timer);
-    pendingSavesRef.current.delete(id);
+    pendingSavesRef.current.delete(eventKey);
     return pending;
   }
 
@@ -277,7 +330,7 @@ export function WeekCalendar() {
     dragCardRef.current = card;
     dragRef.current = {
       pointerId: pointerEvent.pointerId,
-      eventId: event.id,
+      eventKey: event.occurrenceKey,
       mode,
       original: event,
       current: event,
@@ -286,7 +339,7 @@ export function WeekCalendar() {
       startClientY: pointerEvent.clientY,
       moved: false
     };
-    setActiveEventId(event.id);
+    setActiveEventKey(event.occurrenceKey);
     pointerEvent.preventDefault();
   }
 
@@ -345,11 +398,15 @@ export function WeekCalendar() {
     }
     dragRef.current = null;
     dragCardRef.current = null;
-    setActiveEventId(null);
+    setActiveEventKey(null);
 
     if (drag.moved) {
-      setEvents((current) => current.map((event) => event.id === drag.eventId ? drag.current : event));
-      scheduleEventSave(drag.current, drag.original);
+      setEvents((current) => current.map((event) => event.occurrenceKey === drag.eventKey ? drag.current : event));
+      if (drag.original.recurrenceIntervalWeeks === null) {
+        scheduleEventSave(drag.current, drag.original, "series");
+      } else {
+        setPendingScopeChange({ previous: drag.original, updated: drag.current });
+      }
     } else if (drag.mode === "move") {
       setEditor({ mode: "edit", event: drag.original });
     }
@@ -362,10 +419,10 @@ export function WeekCalendar() {
       window.cancelAnimationFrame(dragFrameRef.current);
       dragFrameRef.current = null;
     }
-    setEvents((current) => current.map((event) => event.id === drag.original.id ? drag.original : event));
+    setEvents((current) => current.map((event) => event.occurrenceKey === drag.original.occurrenceKey ? drag.original : event));
     dragRef.current = null;
     dragCardRef.current = null;
-    setActiveEventId(null);
+    setActiveEventKey(null);
   }
 
   function handleEventKey(event: CalendarEvent, keyboardEvent: React.KeyboardEvent<HTMLButtonElement>) {
@@ -399,8 +456,12 @@ export function WeekCalendar() {
     }
 
     const updated = { ...event, startsAt: start.toISOString(), endsAt: end.toISOString() };
-    setEvents((current) => current.map((item) => item.id === event.id ? updated : item));
-    scheduleEventSave(updated, event);
+    setEvents((current) => current.map((item) => item.occurrenceKey === event.occurrenceKey ? updated : item));
+    if (event.recurrenceIntervalWeeks === null) {
+      scheduleEventSave(updated, event, "series");
+    } else {
+      setPendingScopeChange({ previous: event, updated });
+    }
   }
 
   const todayKey = dateKey(now);
@@ -487,9 +548,9 @@ export function WeekCalendar() {
 
                     return (
                       <button
-                        key={event.id}
+                        key={event.occurrenceKey}
                         type="button"
-                        className={`calendar-event event-${event.color}${activeEventId === event.id ? " is-dragging" : ""}${layout.compact ? " is-compact" : ""}`}
+                        className={`calendar-event event-${event.color}${activeEventKey === event.occurrenceKey ? " is-dragging" : ""}${layout.compact ? " is-compact" : ""}`}
                         style={{ top: layout.top, height: layout.height, left: dayColumnLeft(layout.dayIndex) }}
                         onPointerDown={(pointerEvent) => startDrag(pointerEvent, event, "move")}
                         onPointerMove={moveDrag}
@@ -547,11 +608,19 @@ export function WeekCalendar() {
 
       {editor && (
         <EventDialog
-          key={editor.mode === "edit" ? editor.event.id : `new-${editor.date}`}
+          key={editor.mode === "edit" ? editor.event.occurrenceKey : `new-${editor.date}`}
           editor={editor}
           onClose={() => setEditor(null)}
           onSave={saveFromEditor}
           onDelete={deleteFromEditor}
+        />
+      )}
+
+      {pendingScopeChange && (
+        <RecurrenceScopeDialog
+          action="update"
+          onChoose={applyPendingScopeChange}
+          onCancel={cancelPendingScopeChange}
         />
       )}
     </main>
@@ -566,8 +635,8 @@ function EventDialog({
 }: {
   editor: EditorState;
   onClose: () => void;
-  onSave: (input: EventInput, id?: string) => Promise<void>;
-  onDelete: (id: string) => Promise<void>;
+  onSave: (input: EventInput, existing?: CalendarEvent, scope?: RecurringEventScope) => Promise<void>;
+  onDelete: (event: CalendarEvent, scope?: RecurringEventScope) => Promise<void>;
 }) {
   const existing = editor.mode === "edit" ? editor.event : null;
   const initial = existing ? eventToDraft(existing) : newEventDraft(editor.mode === "create" ? editor.date : dateKey(new Date()));
@@ -581,6 +650,7 @@ function EventDialog({
   const [recurrenceIntervalWeeks, setRecurrenceIntervalWeeks] = useState(initial.recurrenceIntervalWeeks ?? 1);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [scopedAction, setScopedAction] = useState<EditorScopedAction | null>(null);
 
   async function submit(formEvent: FormEvent) {
     formEvent.preventDefault();
@@ -591,37 +661,75 @@ function EventDialog({
       setError("Choose a time between 7:00 AM and 10:00 PM.");
       return;
     }
-    setBusy(true);
-    setError(null);
-    try {
-      await onSave({
-        title: title.trim(),
-        description: description.trim(),
-        startsAt: start.toISOString(),
-        endsAt: end.toISOString(),
-        recurrenceIntervalWeeks: recurring ? recurrenceIntervalWeeks : null,
-        recurrenceTimeZone: recurring
-          ? existing?.recurrenceTimeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone ?? "UTC"
-          : null,
-        ...(existing ? { occurrenceStartsAt: existing.occurrenceStartsAt } : {}),
-        color
-      }, existing?.id);
-    } catch (submitError) {
-      setError(readError(submitError));
-      setBusy(false);
+    const input: EventInput = {
+      title: title.trim(),
+      description: description.trim(),
+      startsAt: start.toISOString(),
+      endsAt: end.toISOString(),
+      recurrenceIntervalWeeks: recurring ? recurrenceIntervalWeeks : null,
+      recurrenceTimeZone: recurring
+        ? existing?.recurrenceTimeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone ?? "UTC"
+        : null,
+      ...(existing ? { occurrenceStartsAt: existing.occurrenceStartsAt } : {}),
+      color
+    };
+
+    if (existing?.recurrenceIntervalWeeks !== null && existing) {
+      setScopedAction({ kind: "save", input });
+      return;
     }
+
+    await commitSave(input, "series");
   }
 
   async function remove() {
     if (!existing) return;
+
+    if (existing.recurrenceIntervalWeeks !== null) {
+      setScopedAction({ kind: "delete" });
+      return;
+    }
+
+    await commitDelete("series");
+  }
+
+  async function commitSave(input: EventInput, scope: RecurringEventScope) {
     setBusy(true);
     setError(null);
     try {
-      await onDelete(existing.id);
+      await onSave(input, existing ?? undefined, scope);
+    } catch (saveError) {
+      setError(readError(saveError));
+      setBusy(false);
+      setScopedAction(null);
+    }
+  }
+
+  async function commitDelete(scope: RecurringEventScope) {
+    if (!existing) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await onDelete(existing, scope);
     } catch (deleteError) {
       setError(readError(deleteError));
       setBusy(false);
+      setScopedAction(null);
     }
+  }
+
+  if (scopedAction) {
+    return (
+      <RecurrenceScopeDialog
+        action={scopedAction.kind === "save" ? "update" : "delete"}
+        busy={busy}
+        onChoose={(scope) => {
+          if (scopedAction.kind === "save") void commitSave(scopedAction.input, scope);
+          else void commitDelete(scope);
+        }}
+        onCancel={() => setScopedAction(null)}
+      />
+    );
   }
 
   return (
@@ -690,7 +798,7 @@ function EventDialog({
           </div>
 
           {existing?.recurrenceIntervalWeeks != null && (
-            <p className="recurrence-note">Changes and deletion apply to the entire recurring series.</p>
+            <p className="recurrence-note">When you save or delete, choose this event or the entire series.</p>
           )}
 
           <label className="field field-wide">
@@ -716,7 +824,7 @@ function EventDialog({
           <div className="dialog-actions">
             {existing ? (
               <button className="delete-button" type="button" onClick={() => void remove()} disabled={busy}>
-                <Trash2 size={16} /> {existing.recurrenceIntervalWeeks === null ? "Delete" : "Delete series"}
+                <Trash2 size={16} /> Delete
               </button>
             ) : <span />}
             <div>
@@ -725,6 +833,39 @@ function EventDialog({
             </div>
           </div>
         </form>
+      </section>
+    </div>
+  );
+}
+
+function RecurrenceScopeDialog({
+  action,
+  busy = false,
+  onChoose,
+  onCancel
+}: {
+  action: "update" | "delete";
+  busy?: boolean;
+  onChoose: (scope: RecurringEventScope) => void;
+  onCancel: () => void;
+}) {
+  const deleting = action === "delete";
+
+  return (
+    <div className="modal-backdrop" role="presentation">
+      <section className="scope-dialog" role="dialog" aria-modal="true" aria-labelledby="scope-dialog-title">
+        <p className="eyebrow">Recurring event</p>
+        <h2 id="scope-dialog-title">{deleting ? "Delete recurring event?" : "Update recurring event?"}</h2>
+        <p>Choose whether this applies only to the occurrence you selected or to every event in the series.</p>
+        <div className="scope-actions">
+          <button className="secondary-button" type="button" onClick={onCancel} disabled={busy}>Cancel</button>
+          <button className={deleting ? "scope-delete-button" : "secondary-button"} type="button" onClick={() => onChoose("occurrence")} disabled={busy}>
+            This event
+          </button>
+          <button className={deleting ? "scope-delete-button" : "primary-button"} type="button" onClick={() => onChoose("series")} disabled={busy}>
+            Entire series
+          </button>
+        </div>
       </section>
     </div>
   );
@@ -739,7 +880,7 @@ async function apiRequest<T>(url: string, init?: RequestInit): Promise<T> {
   return payload.data;
 }
 
-function eventPatchBody(event: CalendarEvent) {
+function eventPatchBody(event: CalendarEvent, scope: RecurringEventScope) {
   return {
     id: event.id,
     title: event.title,
@@ -749,6 +890,7 @@ function eventPatchBody(event: CalendarEvent) {
     recurrenceIntervalWeeks: event.recurrenceIntervalWeeks,
     recurrenceTimeZone: event.recurrenceTimeZone,
     occurrenceStartsAt: event.occurrenceStartsAt,
+    scope,
     color: event.color
   };
 }

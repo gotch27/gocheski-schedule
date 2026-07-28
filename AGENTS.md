@@ -28,6 +28,7 @@ This is a Next.js calendar built with NextSignal, Drizzle ORM, and Neon Postgres
 
 - Keep route handlers thin and database calls inside services.
 - Keep recurring events as one database row and expand occurrences for the requested week in the event service.
+- Store current-occurrence edits and cancellations in `calendar_event_exceptions`; never clone the recurring master row.
 - Preserve the series time zone when calculating or moving weekly occurrences so local clock times survive DST changes.
 - Keep every API and business process explicit about `auth`, `validate`, and `handle`.
 - Use result envelopes for expected outcomes instead of throwing.

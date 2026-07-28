@@ -48,7 +48,7 @@ export const deleteEventBusiness = businessProcess<DeleteEventInput, { id: strin
   auth: () => ok(),
   validate: validateWith(deleteEventInputSchema),
   async handle(ctx, input) {
-    const deleted = await ctx.services.events.delete(databaseUrl(ctx), input.id);
+    const deleted = await ctx.services.events.delete(databaseUrl(ctx), input);
     return deleted ? value({ id: input.id }) : notFound("Calendar event not found.");
   }
 });

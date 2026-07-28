@@ -1,11 +1,18 @@
 import { neon } from "@neondatabase/serverless";
-import { and, asc, eq, gt, isNotNull, isNull, lt, or } from "drizzle-orm";
+import { and, asc, eq, gt, inArray, isNotNull, isNull, lt, or } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/neon-http";
-import { calendarEvents, type CalendarEventRecord, type EventColor } from "@/db/schema";
-import type { CreateEventInput, UpdateEventInput } from "@/nextsignal/schemas";
+import {
+  calendarEventExceptions,
+  calendarEvents,
+  type CalendarEventExceptionRecord,
+  type CalendarEventRecord,
+  type EventColor
+} from "@/db/schema";
+import type { CreateEventInput, DeleteEventInput, UpdateEventInput } from "@/nextsignal/schemas";
 
 export type CalendarEvent = {
   id: string;
+  occurrenceKey: string;
   title: string;
   description: string;
   startsAt: string;
@@ -14,6 +21,7 @@ export type CalendarEvent = {
   recurrenceTimeZone: string | null;
   recurrenceAnchorStartsAt: string;
   occurrenceStartsAt: string;
+  isOccurrenceOverride: boolean;
   color: EventColor;
   createdAt: string;
   updatedAt: string;
@@ -45,10 +53,14 @@ function toCalendarEvent(
 ): CalendarEvent {
   return {
     ...record,
+    occurrenceKey: record.recurrenceIntervalWeeks === null
+      ? record.id
+      : `${record.id}:${occurrence.startsAt.toISOString()}`,
     startsAt: occurrence.startsAt.toISOString(),
     endsAt: occurrence.endsAt.toISOString(),
     recurrenceAnchorStartsAt: record.startsAt.toISOString(),
     occurrenceStartsAt: occurrence.startsAt.toISOString(),
+    isOccurrenceOverride: false,
     createdAt: record.createdAt.toISOString(),
     updatedAt: record.updatedAt.toISOString()
   };
@@ -59,7 +71,8 @@ export const services = {
     async list(connectionString: string, weekStart: string, weekEnd: string): Promise<CalendarEvent[]> {
       const rangeStart = new Date(weekStart);
       const rangeEnd = new Date(weekEnd);
-      const records = await database(connectionString)
+      const db = database(connectionString);
+      const records = await db
         .select()
         .from(calendarEvents)
         .where(or(
@@ -75,8 +88,58 @@ export const services = {
         ))
         .orderBy(asc(calendarEvents.startsAt));
 
-      return records
-        .flatMap((record) => occurrencesInRange(record, rangeStart, rangeEnd))
+      const recurringIds = records
+        .filter((record) => record.recurrenceIntervalWeeks !== null)
+        .map((record) => record.id);
+      const exceptionsById = new Map<string, CalendarEventExceptionRecord>();
+
+      if (recurringIds.length > 0) {
+        const seriesExceptions = await db
+          .select()
+          .from(calendarEventExceptions)
+          .where(inArray(calendarEventExceptions.eventId, recurringIds));
+        for (const exception of seriesExceptions) exceptionsById.set(exception.id, exception);
+      }
+
+      const movedIntoRange = await db
+        .select()
+        .from(calendarEventExceptions)
+        .where(and(
+          eq(calendarEventExceptions.isCancelled, false),
+          lt(calendarEventExceptions.startsAt, rangeEnd),
+          gt(calendarEventExceptions.endsAt, rangeStart)
+        ));
+      for (const exception of movedIntoRange) exceptionsById.set(exception.id, exception);
+
+      const recordIds = new Set(records.map((record) => record.id));
+      const missingEventIds = [...new Set(
+        movedIntoRange
+          .map((exception) => exception.eventId)
+          .filter((eventId) => !recordIds.has(eventId))
+      )];
+      const allRecords = [...records];
+
+      if (missingEventIds.length > 0) {
+        allRecords.push(...await db
+          .select()
+          .from(calendarEvents)
+          .where(inArray(calendarEvents.id, missingEventIds)));
+      }
+
+      const exceptionsByEvent = new Map<string, CalendarEventExceptionRecord[]>();
+      for (const exception of exceptionsById.values()) {
+        const existing = exceptionsByEvent.get(exception.eventId) ?? [];
+        existing.push(exception);
+        exceptionsByEvent.set(exception.eventId, existing);
+      }
+
+      return allRecords
+        .flatMap((record) => occurrencesInRange(
+          record,
+          rangeStart,
+          rangeEnd,
+          exceptionsByEvent.get(record.id) ?? []
+        ))
         .sort((left, right) => new Date(left.startsAt).getTime() - new Date(right.startsAt).getTime());
     },
 
@@ -106,6 +169,37 @@ export const services = {
         .limit(1);
 
       if (!existing) return null;
+
+      if (input.scope === "occurrence" && existing.recurrenceIntervalWeeks !== null && input.occurrenceStartsAt) {
+        const occurrenceStartsAt = new Date(input.occurrenceStartsAt);
+        const [exception] = await db
+          .insert(calendarEventExceptions)
+          .values({
+            eventId: existing.id,
+            occurrenceStartsAt,
+            title: input.title,
+            description: input.description,
+            startsAt: new Date(input.startsAt),
+            endsAt: new Date(input.endsAt),
+            color: input.color,
+            isCancelled: false
+          })
+          .onConflictDoUpdate({
+            target: [calendarEventExceptions.eventId, calendarEventExceptions.occurrenceStartsAt],
+            set: {
+              title: input.title,
+              description: input.description,
+              startsAt: new Date(input.startsAt),
+              endsAt: new Date(input.endsAt),
+              color: input.color,
+              isCancelled: false,
+              updatedAt: new Date()
+            }
+          })
+          .returning();
+
+        return toExceptionCalendarEvent(existing, exception);
+      }
 
       const requestedStart = new Date(input.startsAt);
       const requestedEnd = new Date(input.endsAt);
@@ -143,15 +237,52 @@ export const services = {
         .where(eq(calendarEvents.id, input.id))
         .returning();
 
+      await db
+        .delete(calendarEventExceptions)
+        .where(eq(calendarEventExceptions.eventId, input.id));
+
       return record
         ? toCalendarEvent(record, { startsAt: requestedStart, endsAt: requestedEnd, index: 0 })
         : null;
     },
 
-    async delete(connectionString: string, id: string): Promise<boolean> {
-      const deleted = await database(connectionString)
+    async delete(connectionString: string, input: DeleteEventInput): Promise<boolean> {
+      const db = database(connectionString);
+      const [existing] = await db
+        .select()
+        .from(calendarEvents)
+        .where(eq(calendarEvents.id, input.id))
+        .limit(1);
+
+      if (!existing) return false;
+
+      if (input.scope === "occurrence" && existing.recurrenceIntervalWeeks !== null && input.occurrenceStartsAt) {
+        await db
+          .insert(calendarEventExceptions)
+          .values({
+            eventId: existing.id,
+            occurrenceStartsAt: new Date(input.occurrenceStartsAt),
+            isCancelled: true
+          })
+          .onConflictDoUpdate({
+            target: [calendarEventExceptions.eventId, calendarEventExceptions.occurrenceStartsAt],
+            set: {
+              title: null,
+              description: null,
+              startsAt: null,
+              endsAt: null,
+              color: null,
+              isCancelled: true,
+              updatedAt: new Date()
+            }
+          });
+
+        return true;
+      }
+
+      const deleted = await db
         .delete(calendarEvents)
-        .where(eq(calendarEvents.id, id))
+        .where(eq(calendarEvents.id, input.id))
         .returning({ id: calendarEvents.id });
 
       return deleted.length > 0;
@@ -161,7 +292,12 @@ export const services = {
 
 const weekMilliseconds = 7 * 24 * 60 * 60 * 1000;
 
-function occurrencesInRange(record: CalendarEventRecord, rangeStart: Date, rangeEnd: Date): CalendarEvent[] {
+function occurrencesInRange(
+  record: CalendarEventRecord,
+  rangeStart: Date,
+  rangeEnd: Date,
+  exceptions: CalendarEventExceptionRecord[]
+): CalendarEvent[] {
   if (record.recurrenceIntervalWeeks === null) return [toCalendarEvent(record)];
 
   const interval = record.recurrenceIntervalWeeks * weekMilliseconds;
@@ -170,16 +306,58 @@ function occurrencesInRange(record: CalendarEventRecord, rangeStart: Date, range
   const firstIndex = Math.max(0, approximateIndex - 1);
   const occurrences: CalendarEvent[] = [];
   const timeZone = validTimeZone(record.recurrenceTimeZone);
+  const exceptionsByOccurrence = new Map(
+    exceptions.map((exception) => [exception.occurrenceStartsAt.toISOString(), exception])
+  );
+  const consideredOccurrences = new Set<string>();
 
   for (let index = firstIndex; ; index += 1) {
     const startsAt = addWeeksInTimeZone(record.startsAt, index * record.recurrenceIntervalWeeks, timeZone);
     if (startsAt >= rangeEnd) break;
 
     const endsAt = new Date(startsAt.getTime() + duration);
-    if (endsAt > rangeStart) occurrences.push(toCalendarEvent(record, { startsAt, endsAt, index }));
+    const occurrenceKey = startsAt.toISOString();
+    consideredOccurrences.add(occurrenceKey);
+    const exception = exceptionsByOccurrence.get(occurrenceKey);
+
+    if (exception) {
+      if (!exception.isCancelled) {
+        const overridden = toExceptionCalendarEvent(record, exception);
+        if (eventOverlapsRange(overridden, rangeStart, rangeEnd)) occurrences.push(overridden);
+      }
+    } else if (endsAt > rangeStart) {
+      occurrences.push(toCalendarEvent(record, { startsAt, endsAt, index }));
+    }
+  }
+
+  for (const exception of exceptions) {
+    if (exception.isCancelled || consideredOccurrences.has(exception.occurrenceStartsAt.toISOString())) continue;
+    const overridden = toExceptionCalendarEvent(record, exception);
+    if (eventOverlapsRange(overridden, rangeStart, rangeEnd)) occurrences.push(overridden);
   }
 
   return occurrences;
+}
+
+function toExceptionCalendarEvent(record: CalendarEventRecord, exception: CalendarEventExceptionRecord): CalendarEvent {
+  const startsAt = exception.startsAt ?? exception.occurrenceStartsAt;
+  const endsAt = exception.endsAt ?? new Date(startsAt.getTime() + record.endsAt.getTime() - record.startsAt.getTime());
+  const occurrenceStartsAt = exception.occurrenceStartsAt.toISOString();
+
+  return {
+    ...toCalendarEvent(record, { startsAt, endsAt, index: 0 }),
+    occurrenceKey: `${record.id}:${occurrenceStartsAt}`,
+    title: exception.title ?? record.title,
+    description: exception.description ?? record.description,
+    color: exception.color ?? record.color,
+    occurrenceStartsAt,
+    isOccurrenceOverride: true,
+    updatedAt: exception.updatedAt.toISOString()
+  };
+}
+
+function eventOverlapsRange(event: CalendarEvent, rangeStart: Date, rangeEnd: Date) {
+  return new Date(event.startsAt) < rangeEnd && new Date(event.endsAt) > rangeStart;
 }
 
 type DateParts = {

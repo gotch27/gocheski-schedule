@@ -2,6 +2,7 @@ import { z } from "zod";
 import { eventColors } from "@/db/schema";
 
 export const eventColorSchema = z.enum(eventColors);
+export const recurringEventScopeSchema = z.enum(["series", "occurrence"]);
 
 const eventFields = {
   title: z.string().trim().min(1, "Give the event a title.").max(120),
@@ -29,15 +30,21 @@ export const createEventInputSchema = z.object(eventFields).refine(validEventRan
 export const updateEventInputSchema = z.object({
   id: z.uuid(),
   occurrenceStartsAt: z.iso.datetime({ offset: true }).optional(),
+  scope: recurringEventScopeSchema.default("series"),
   ...eventFields
 }).refine(validEventRange, {
   message: "The event must end after it starts.",
   path: ["endsAt"]
 });
 
-export const deleteEventInputSchema = z.object({ id: z.uuid() });
+export const deleteEventInputSchema = z.object({
+  id: z.uuid(),
+  occurrenceStartsAt: z.iso.datetime({ offset: true }).optional(),
+  scope: recurringEventScopeSchema.default("series")
+});
 
 export type EventColor = z.infer<typeof eventColorSchema>;
+export type RecurringEventScope = z.infer<typeof recurringEventScopeSchema>;
 export type ListEventsInput = z.infer<typeof listEventsInputSchema>;
 export type CreateEventInput = z.infer<typeof createEventInputSchema>;
 export type UpdateEventInput = z.infer<typeof updateEventInputSchema>;
