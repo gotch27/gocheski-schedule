@@ -1,12 +1,8 @@
-import { loadEnvConfig } from "@next/env";
-import { createConfig, envConfigProvider, jsonConfigProvider } from "@gotch/nextsignal";
-
-// Drizzle Kit runs outside Next.js, so load the same root environment files.
-loadEnvConfig(process.cwd());
+import { createConfig, envConfigProvider, objectConfigProvider } from "@gotch/nextsignal";
 
 export const config = createConfig({
   providers: [
-    jsonConfigProvider("config/default.json"),
+    objectConfigProvider({ database: { url: "" } }, "defaults"),
     envConfigProvider({ prefix: "NEXTSIGNAL_" })
   ]
 });
