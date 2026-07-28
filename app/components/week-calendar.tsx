@@ -405,11 +405,6 @@ export function WeekCalendar() {
   return (
     <main className="schedule-shell">
       <header className="topbar">
-        <a className="brand" href="/schedule" aria-label="Gocheski Mind home">
-          <span>Gocheski</span>
-          <span aria-hidden="true">/</span>
-          <strong>Mind</strong>
-        </a>
         <a className="brand-logo-link" href="/schedule" aria-label="Gocheski home">
           <img className="brand-logo" src="/schedule/goch-mark.svg" alt="" draggable="false" />
         </a>
