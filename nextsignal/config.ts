@@ -1,8 +1,8 @@
-import { createConfig, envConfigProvider, objectConfigProvider } from "@gotch/nextsignal";
+import { createConfig, envConfigProvider, jsonConfigProvider } from "@gotch/nextsignal";
 
 export const config = createConfig({
   providers: [
-    objectConfigProvider({ database: { url: "" } }, "defaults"),
+    jsonConfigProvider("config/default.json"),
     envConfigProvider({ prefix: "NEXTSIGNAL_" })
   ]
 });
