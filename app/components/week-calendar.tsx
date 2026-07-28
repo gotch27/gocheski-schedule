@@ -180,7 +180,13 @@ export function WeekCalendar() {
 
   function applyPendingScopeChange(scope: RecurringEventScope) {
     if (!pendingScopeChange) return;
-    scheduleEventSave(pendingScopeChange.updated, pendingScopeChange.previous, scope);
+    const updated = scope === "occurrence"
+      ? { ...pendingScopeChange.updated, isOccurrenceOverride: true }
+      : pendingScopeChange.updated;
+    setEvents((current) => current.map((event) =>
+      event.occurrenceKey === updated.occurrenceKey ? updated : event
+    ));
+    scheduleEventSave(updated, pendingScopeChange.previous, scope);
     setPendingScopeChange(null);
   }
 
@@ -402,8 +408,12 @@ export function WeekCalendar() {
 
     if (drag.moved) {
       setEvents((current) => current.map((event) => event.occurrenceKey === drag.eventKey ? drag.current : event));
-      if (drag.original.recurrenceIntervalWeeks === null) {
-        scheduleEventSave(drag.current, drag.original, "series");
+      if (!needsRecurrenceScopeChoice(drag.original)) {
+        scheduleEventSave(
+          drag.current,
+          drag.original,
+          drag.original.isOccurrenceOverride ? "occurrence" : "series"
+        );
       } else {
         setPendingScopeChange({ previous: drag.original, updated: drag.current });
       }
@@ -457,8 +467,8 @@ export function WeekCalendar() {
 
     const updated = { ...event, startsAt: start.toISOString(), endsAt: end.toISOString() };
     setEvents((current) => current.map((item) => item.occurrenceKey === event.occurrenceKey ? updated : item));
-    if (event.recurrenceIntervalWeeks === null) {
-      scheduleEventSave(updated, event, "series");
+    if (!needsRecurrenceScopeChoice(event)) {
+      scheduleEventSave(updated, event, event.isOccurrenceOverride ? "occurrence" : "series");
     } else {
       setPendingScopeChange({ previous: event, updated });
     }
@@ -674,23 +684,23 @@ function EventDialog({
       color
     };
 
-    if (existing?.recurrenceIntervalWeeks !== null && existing) {
+    if (existing && needsRecurrenceScopeChoice(existing)) {
       setScopedAction({ kind: "save", input });
       return;
     }
 
-    await commitSave(input, "series");
+    await commitSave(input, existing?.isOccurrenceOverride ? "occurrence" : "series");
   }
 
   async function remove() {
     if (!existing) return;
 
-    if (existing.recurrenceIntervalWeeks !== null) {
+    if (needsRecurrenceScopeChoice(existing)) {
       setScopedAction({ kind: "delete" });
       return;
     }
 
-    await commitDelete("series");
+    await commitDelete(existing.isOccurrenceOverride ? "occurrence" : "series");
   }
 
   async function commitSave(input: EventInput, scope: RecurringEventScope) {
@@ -797,7 +807,7 @@ function EventDialog({
             )}
           </div>
 
-          {existing?.recurrenceIntervalWeeks != null && (
+          {existing && needsRecurrenceScopeChoice(existing) && (
             <p className="recurrence-note">When you save or delete, choose this event or the entire series.</p>
           )}
 
@@ -893,6 +903,10 @@ function eventPatchBody(event: CalendarEvent, scope: RecurringEventScope) {
     scope,
     color: event.color
   };
+}
+
+function needsRecurrenceScopeChoice(event: CalendarEvent) {
+  return event.recurrenceIntervalWeeks !== null && !event.isOccurrenceOverride;
 }
 
 function hasSameEditableValues(left: CalendarEvent, right: CalendarEvent) {
