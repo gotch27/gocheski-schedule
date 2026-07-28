@@ -60,6 +60,7 @@ const SLOT_MINUTES = 15;
 const SAVE_DELAY_MS = 5_000;
 const TIME_GUTTER = 76;
 const TOTAL_MINUTES = DAY_END - DAY_START;
+const EVENTS_API_PATH = "/schedule/api/events";
 const DAY_NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
 const COLORS: Array<{ value: EventColor; label: string }> = [
   { value: "violet", label: "Violet" },
@@ -100,7 +101,7 @@ export function WeekCalendar() {
         weekStart: rangeStart.toISOString(),
         weekEnd: rangeEnd.toISOString()
       });
-      const data = await apiRequest<{ events: CalendarEvent[] }>(`/api/events?${query}`);
+      const data = await apiRequest<{ events: CalendarEvent[] }>(`${EVENTS_API_PATH}?${query}`);
       setEvents(data.events);
       for (const event of data.events) persistedEventsRef.current.set(event.id, event);
     } catch (error) {
@@ -130,7 +131,7 @@ export function WeekCalendar() {
     function flushPendingSaves() {
       for (const pending of pendingSavesRef.current.values()) {
         window.clearTimeout(pending.timer);
-        void fetch("/api/events", {
+        void fetch(EVENTS_API_PATH, {
           method: "PATCH",
           headers: { "content-type": "application/json" },
           body: JSON.stringify(eventPatchBody(pending.latest)),
@@ -171,7 +172,7 @@ export function WeekCalendar() {
       await persistEvent(optimistic, rollback);
       setNotice("Event updated");
     } else {
-      const data = await apiRequest<{ event: CalendarEvent }>("/api/events", {
+      const data = await apiRequest<{ event: CalendarEvent }>(EVENTS_API_PATH, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(input)
@@ -191,7 +192,7 @@ export function WeekCalendar() {
   async function deleteFromEditor(id: string) {
     const pending = cancelScheduledSave(id);
     try {
-      await apiRequest<{ id: string }>("/api/events", {
+      await apiRequest<{ id: string }>(EVENTS_API_PATH, {
         method: "DELETE",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ id })
@@ -208,7 +209,7 @@ export function WeekCalendar() {
 
   async function persistEvent(updated: CalendarEvent, previous: CalendarEvent) {
     try {
-      const data = await apiRequest<{ event: CalendarEvent }>("/api/events", {
+      const data = await apiRequest<{ event: CalendarEvent }>(EVENTS_API_PATH, {
         method: "PATCH",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(eventPatchBody(updated))
@@ -403,7 +404,7 @@ export function WeekCalendar() {
           <strong>Mind</strong>
         </a>
         <a className="brand-logo-link" href="#calendar" aria-label="Gocheski home">
-          <img className="brand-logo" src="/goch-mark.svg" alt="" draggable="false" />
+          <img className="brand-logo" src="/schedule/goch-mark.svg" alt="" draggable="false" />
         </a>
         <button className="primary-button" type="button" onClick={() => openCreate()}>
           <Plus size={16} strokeWidth={2.6} /> Event
