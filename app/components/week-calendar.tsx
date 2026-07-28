@@ -5,6 +5,7 @@ import {
   ChevronLeft,
   ChevronRight,
   GripHorizontal,
+  LogOut,
   Plus,
   Trash2,
   X
@@ -61,6 +62,7 @@ const SAVE_DELAY_MS = 5_000;
 const TIME_GUTTER = 76;
 const TOTAL_MINUTES = DAY_END - DAY_START;
 const EVENTS_API_PATH = "/schedule/api/events";
+const LOGIN_API_PATH = "/schedule/api/auth/login";
 const DAY_NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
 const COLORS: Array<{ value: EventColor; label: string }> = [
   { value: "violet", label: "Violet" },
@@ -155,6 +157,11 @@ export function WeekCalendar() {
 
   function goToToday() {
     setWeekStartKey(dateKey(startOfWeek(new Date())));
+  }
+
+  async function logout() {
+    await fetch(LOGIN_API_PATH, { method: "DELETE" });
+    window.location.replace("/schedule");
   }
 
   function openCreate(date = dateKey(isDateInWeek(new Date(), days) ? new Date() : days[0])) {
@@ -398,17 +405,22 @@ export function WeekCalendar() {
   return (
     <main className="schedule-shell">
       <header className="topbar">
-        <a className="brand" href="#calendar" aria-label="Gocheski Mind home">
+        <a className="brand" href="/schedule" aria-label="Gocheski Mind home">
           <span>Gocheski</span>
           <span aria-hidden="true">/</span>
           <strong>Mind</strong>
         </a>
-        <a className="brand-logo-link" href="#calendar" aria-label="Gocheski home">
+        <a className="brand-logo-link" href="/schedule" aria-label="Gocheski home">
           <img className="brand-logo" src="/schedule/goch-mark.svg" alt="" draggable="false" />
         </a>
-        <button className="primary-button" type="button" onClick={() => openCreate()}>
-          <Plus size={16} strokeWidth={2.6} /> Event
-        </button>
+        <div className="topbar-actions">
+          <button className="logout-button" type="button" onClick={() => void logout()}>
+            <LogOut size={14} /> <span>Log out</span>
+          </button>
+          <button className="primary-button" type="button" onClick={() => openCreate()}>
+            <Plus size={16} strokeWidth={2.6} /> Event
+          </button>
+        </div>
       </header>
 
       <section className="calendar-section" id="calendar" aria-label="Weekly calendar">

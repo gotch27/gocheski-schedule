@@ -15,6 +15,8 @@ This is a Next.js calendar built with NextSignal, Drizzle ORM, and Neon Postgres
 ## Project map
 
 - `app/api/events/route.ts` is a thin NextSignal route wrapper.
+- `app/api/auth/login/route.ts` owns shared-token login and logout.
+- `app/lib/schedule-auth.ts` must remain cookie-compatible with `gocheski.com/admin`.
 - `nextsignal/processes/api/` contains request-facing processes.
 - `nextsignal/processes/business/` contains reusable calendar operations.
 - `nextsignal/services/` is the app-owned Drizzle repository boundary.
@@ -33,4 +35,4 @@ This is a Next.js calendar built with NextSignal, Drizzle ORM, and Neon Postgres
 - Run `npm run check` after process, service, schema, or configuration changes.
 - Run `npm run build` after larger changes.
 
-There is currently no authentication, queue, scheduler, recurring process, distributed process, or worker runtime. Do not add those boundaries until the product needs them.
+Authentication reuses the `goch_admin_session` cookie, `ADMIN_TOKEN`, and `SESSION_SECRET` from `gocheski.com/admin`. There is currently no queue, scheduler, recurring process, distributed process, or worker runtime. Do not add those boundaries until the product needs them.

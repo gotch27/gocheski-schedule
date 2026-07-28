@@ -103,7 +103,14 @@ button {
   user-select: none;
 }
 
-.topbar > .primary-button {
+.topbar-actions {
+  justify-self: end;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.topbar-actions > .primary-button {
   justify-self: end;
   min-height: 34px;
   padding: 0 12px;
@@ -111,6 +118,101 @@ button {
   font-size: 12px;
   letter-spacing: 0.015em;
   box-shadow: none;
+}
+
+.logout-button {
+  min-height: 34px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 10px;
+  border: 1px solid #c9c9c9;
+  border-radius: 7px;
+  background: #ffffff;
+  color: #444444;
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.logout-button:hover {
+  border-color: #000000;
+  color: #000000;
+}
+
+.auth-page {
+  min-height: 100svh;
+  padding: clamp(22px, 4vw, 48px);
+  background: #f7f7f4;
+  color: var(--ink);
+}
+
+.auth-page--centered {
+  display: grid;
+  place-items: center;
+}
+
+.schedule-login {
+  display: grid;
+  width: min(100%, 420px);
+  gap: 18px;
+  padding: clamp(22px, 4vw, 34px);
+  border: 1px solid #d6d4cb;
+  border-radius: 8px;
+  background: var(--paper);
+}
+
+.schedule-login h1 {
+  margin: 8px 0 0;
+  font-size: clamp(2rem, 1.45rem + 1.7vw, 3.4rem);
+  line-height: 1;
+}
+
+.schedule-login label {
+  display: grid;
+  gap: 7px;
+  color: #384055;
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+.schedule-login input {
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid #bfc3cf;
+  border-radius: 6px;
+  background: #ffffff;
+  color: var(--ink);
+  font: inherit;
+  font-weight: 400;
+}
+
+.schedule-login button {
+  min-height: 42px;
+  padding: 0 16px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--ink);
+  color: var(--paper);
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.schedule-login button:disabled {
+  cursor: wait;
+  opacity: 0.58;
+}
+
+.auth-home-link {
+  width: max-content;
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.auth-message {
+  margin: 0;
+  color: #384055;
+  font-weight: 600;
 }
 
 .primary-button,
@@ -930,6 +1032,10 @@ button {
   .topbar .primary-button {
     min-height: 32px;
     padding: 0 10px;
+  }
+
+  .logout-button span {
+    display: none;
   }
 
   .calendar-section {

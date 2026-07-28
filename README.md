@@ -8,6 +8,8 @@ Add your pooled Neon connection string to `.env.local`:
 
 ```dotenv
 NEXTSIGNAL_DATABASE__URL=postgresql://user:password@host.neon.tech/database?sslmode=require
+ADMIN_TOKEN=replace-with-the-shared-admin-token
+SESSION_SECRET=replace-with-the-shared-admin-session-secret
 ```
 
 Then install dependencies, apply the committed migration, and start the app:
@@ -19,6 +21,8 @@ npm run dev
 ```
 
 Open `http://localhost:3000`.
+
+`ADMIN_TOKEN` and `SESSION_SECRET` should match the values used by `gocheski.com/admin`. The shared signed cookie makes one login valid for both `/admin` and `/schedule` on the production domain.
 
 ## Calendar behavior
 
@@ -45,10 +49,11 @@ Generated SQL and schema snapshots are committed under `drizzle/`.
 
 - `app/components/week-calendar.tsx` owns the interactive calendar surface.
 - `app/api/events/route.ts` is the thin NextSignal HTTP boundary.
+- `app/api/auth/login/route.ts` provides the shared token session endpoint.
 - `nextsignal/processes/api/events.ts` owns anonymous request orchestration.
 - `nextsignal/processes/business/events.ts` owns reusable event operations.
 - `nextsignal/services/index.ts` contains the Drizzle event repository.
 - `db/schema.ts` defines the typed Postgres schema.
 - `drizzle.config.ts` configures migration generation and execution.
 
-This first version intentionally has no authentication, workers, queues, or scheduled processes.
+This version uses the same token authentication as `gocheski.com/admin`. It intentionally has no workers, queues, or scheduled processes.
