@@ -10,17 +10,17 @@ export async function generateMetadata(): Promise<Metadata> {
   const origin = `${protocol}://${host}`;
 
   return {
-    title: "Gocheski Mind",
+    title: "Gocheski Schedule",
     description: "A focused weekly calendar for shaping your time.",
     openGraph: {
-      title: "Gocheski Mind",
+      title: "Gocheski Schedule",
       description: "Make room for what matters.",
       type: "website",
-      images: [{ url: `${origin}/schedule/og.png`, width: 1200, height: 630, alt: "Gocheski Mind weekly calendar" }]
+      images: [{ url: `${origin}/schedule/og.png`, width: 1200, height: 630, alt: "Gocheski Schedule weekly calendar" }]
     },
     twitter: {
       card: "summary_large_image",
-      title: "Gocheski Mind",
+      title: "Gocheski Schedule",
       description: "Make room for what matters.",
       images: [`${origin}/schedule/og.png`]
     }
