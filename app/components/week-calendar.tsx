@@ -8,6 +8,7 @@ import {
   Copy,
   GripHorizontal,
   LogOut,
+  Moon,
   Pencil,
   Plus,
   Trash2,
@@ -141,12 +142,22 @@ type BulkDelete = {
   busy: boolean;
 };
 
-const DAY_START = 7 * 60;
-const DAY_END = 22 * 60;
+type SleepHours = {
+  startMinutes: number;
+  endMinutes: number;
+};
+
+const DAY_START = 0;
+const DAY_END = 24 * 60;
+const INITIAL_VIEW_START = 7 * 60;
+const INITIAL_VISIBLE_MINUTES = DAY_END - INITIAL_VIEW_START;
+const DAY_HEADER_HEIGHT = 56;
 const SLOT_MINUTES = 15;
 const SAVE_DELAY_MS = 5_000;
 const TIME_GUTTER = 76;
 const TOTAL_MINUTES = DAY_END - DAY_START;
+const SLEEP_HOURS_STORAGE_KEY = "gocheski-schedule:sleep-hours";
+const DEFAULT_SLEEP_HOURS: SleepHours = { startMinutes: 23 * 60, endMinutes: 7 * 60 };
 const EVENTS_API_PATH = "/schedule/api/events";
 const LOGIN_API_PATH = "/schedule/api/auth/login";
 const DAY_NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
@@ -173,8 +184,14 @@ export function WeekCalendar() {
   const [selectedEventKeys, setSelectedEventKeys] = useState<Set<string>>(() => new Set());
   const [selectionBox, setSelectionBox] = useState<SelectionBox | null>(null);
   const [bulkDelete, setBulkDelete] = useState<BulkDelete | null>(null);
+  const [sleepHours, setSleepHours] = useState<SleepHours | null>(null);
+  const [sleepEditorOpen, setSleepEditorOpen] = useState(false);
   const [now, setNow] = useState(() => new Date());
+  const calendarScrollerRef = useRef<HTMLDivElement>(null);
+  const calendarCanvasRef = useRef<HTMLDivElement>(null);
   const timelineRef = useRef<HTMLDivElement>(null);
+  const timelineHeightRef = useRef(0);
+  const initialScrollAppliedRef = useRef(false);
   const dragRef = useRef<DragState | null>(null);
   const dragFrameRef = useRef<number | null>(null);
   const selectionDragRef = useRef<SelectionDragState | null>(null);
@@ -183,7 +200,7 @@ export function WeekCalendar() {
 
   const weekStart = useMemo(() => parseDateKey(weekStartKey), [weekStartKey]);
   const days = useMemo(() => Array.from({ length: 7 }, (_, index) => addDays(weekStart, index)), [weekStart]);
-  const hours = useMemo(() => Array.from({ length: (DAY_END - DAY_START) / 60 }, (_, index) => DAY_START + index * 60), []);
+  const hours = useMemo(() => Array.from({ length: (DAY_END - DAY_START) / 60 + 1 }, (_, index) => DAY_START + index * 60), []);
 
   const loadEvents = useCallback(async () => {
     setLoading(true);
@@ -219,6 +236,39 @@ export function WeekCalendar() {
   useEffect(() => {
     const timer = window.setInterval(() => setNow(new Date()), 60_000);
     return () => window.clearInterval(timer);
+  }, []);
+
+  useEffect(() => {
+    try {
+      const stored = window.localStorage.getItem(SLEEP_HOURS_STORAGE_KEY);
+      if (!stored) return;
+      const parsed: unknown = JSON.parse(stored);
+      if (isValidSleepHours(parsed)) setSleepHours(parsed);
+    } catch {}
+  }, []);
+
+  useEffect(() => {
+    const scroller = calendarScrollerRef.current;
+    const canvas = calendarCanvasRef.current;
+    if (!scroller || !canvas) return;
+
+    const syncTimelineHeight = () => {
+      const previousTimelineHeight = timelineHeightRef.current;
+      const visibleStartMinutes = initialScrollAppliedRef.current && previousTimelineHeight > 0
+        ? (scroller.scrollTop / previousTimelineHeight) * TOTAL_MINUTES
+        : INITIAL_VIEW_START;
+      const visibleTimelineHeight = Math.max(1, scroller.clientHeight - DAY_HEADER_HEIGHT);
+      const timelineHeight = visibleTimelineHeight * (TOTAL_MINUTES / INITIAL_VISIBLE_MINUTES);
+      timelineHeightRef.current = timelineHeight;
+      canvas.style.height = `${DAY_HEADER_HEIGHT + timelineHeight}px`;
+      scroller.scrollTop = (visibleStartMinutes / TOTAL_MINUTES) * timelineHeight;
+      initialScrollAppliedRef.current = true;
+    };
+
+    syncTimelineHeight();
+    const observer = new ResizeObserver(syncTimelineHeight);
+    observer.observe(scroller);
+    return () => observer.disconnect();
   }, []);
 
   useEffect(() => {
@@ -304,6 +354,13 @@ export function WeekCalendar() {
   async function logout() {
     await fetch(LOGIN_API_PATH, { method: "DELETE" });
     window.location.replace("/schedule");
+  }
+
+  function saveSleepHours(nextSleepHours: SleepHours) {
+    setSleepHours(nextSleepHours);
+    window.localStorage.setItem(SLEEP_HOURS_STORAGE_KEY, JSON.stringify(nextSleepHours));
+    setSleepEditorOpen(false);
+    setNotice("Sleeping hours updated");
   }
 
   function openCreate(
@@ -743,7 +800,10 @@ export function WeekCalendar() {
       const pointerTop = pointerEvent.clientY - rect.top - drag.grabOffsetY;
       const rawStart = snapMinutes(DAY_START + (pointerTop / rect.height) * TOTAL_MINUTES);
       const earliestStart = Math.min(...drag.originals.map((item) => minutesOfDay(new Date(item.startsAt))));
-      const latestEnd = Math.max(...drag.originals.map((item) => minutesOfDay(new Date(item.endsAt))));
+      const latestEnd = Math.max(...drag.originals.map((item) => calendarEndMinutes(
+        new Date(item.startsAt),
+        new Date(item.endsAt)
+      )));
       const requestedMinuteDelta = rawStart - minutesOfDay(originalStart);
       const minuteDelta = clamp(requestedMinuteDelta, DAY_START - earliestStart, DAY_END - latestEnd);
 
@@ -880,7 +940,10 @@ export function WeekCalendar() {
         </a>
 
         <div className="calendar-toolbar">
-          <h1>{formatWeekRange(weekStart, days[6])}</h1>
+          <h1 aria-label={formatWeekRange(weekStart, days[6])}>
+            <span className="week-range-full" aria-hidden="true">{formatWeekRange(weekStart, days[6])}</span>
+            <span className="week-range-compact" aria-hidden="true">{formatCompactWeekRange(weekStart, days[6])}</span>
+          </h1>
           <div className="calendar-actions">
             <button className="today-button" type="button" onClick={goToToday}>Today</button>
             <div className="week-arrows" aria-label="Week navigation">
@@ -890,7 +953,17 @@ export function WeekCalendar() {
           </div>
         </div>
 
-        <div className="topbar-utilities" aria-hidden="true" />
+        <div className="topbar-utilities">
+          <button
+            className={`toolbar-icon-button${sleepHours ? " is-active" : ""}`}
+            type="button"
+            aria-label="Set sleeping hours"
+            title="Sleeping hours"
+            onClick={() => setSleepEditorOpen(true)}
+          >
+            <Moon size={16} />
+          </button>
+        </div>
 
         <div className="topbar-actions">
           <button className="logout-button" type="button" onClick={() => void logout()}>
@@ -912,8 +985,8 @@ export function WeekCalendar() {
         )}
 
         <div className="calendar-frame">
-          <div className="calendar-scroller" role="region" aria-label="Calendar hours" tabIndex={0}>
-            <div className="calendar-canvas">
+          <div ref={calendarScrollerRef} className="calendar-scroller" role="region" aria-label="Calendar hours" tabIndex={0}>
+            <div ref={calendarCanvasRef} className="calendar-canvas">
               <div className="days-header">
                 <div className="timezone-label">Local</div>
                 {days.map((day, index) => {
@@ -944,7 +1017,11 @@ export function WeekCalendar() {
               >
                 <div className="time-axis" aria-hidden="true">
                   {hours.map((minutes) => (
-                    <span key={minutes} style={{ top: `${((minutes - DAY_START) / TOTAL_MINUTES) * 100}%` }}>
+                    <span
+                      className={minutes === INITIAL_VIEW_START ? "is-initial-hour" : undefined}
+                      key={minutes}
+                      style={{ top: `${((minutes - DAY_START) / TOTAL_MINUTES) * 100}%` }}
+                    >
                       {formatTimeMinutes(minutes)}
                     </span>
                   ))}
@@ -952,7 +1029,18 @@ export function WeekCalendar() {
 
                 <div className="day-columns" aria-hidden="true">
                   {days.map((day) => (
-                    <div className={`calendar-day${dateKey(day) === todayKey ? " is-today" : ""}`} key={dateKey(day)} />
+                    <div className={`calendar-day${dateKey(day) === todayKey ? " is-today" : ""}`} key={dateKey(day)}>
+                      {sleepHours && sleepHourSegments(sleepHours).map((segment) => (
+                        <span
+                          className="sleep-hours-block"
+                          key={`${segment.startMinutes}-${segment.endMinutes}`}
+                          style={{
+                            top: `${(segment.startMinutes / TOTAL_MINUTES) * 100}%`,
+                            height: `${((segment.endMinutes - segment.startMinutes) / TOTAL_MINUTES) * 100}%`
+                          }}
+                        />
+                      ))}
+                    </div>
                   ))}
                 </div>
 
@@ -1103,6 +1191,14 @@ export function WeekCalendar() {
         />
       )}
 
+      {sleepEditorOpen && (
+        <SleepHoursDialog
+          value={sleepHours ?? DEFAULT_SLEEP_HOURS}
+          onClose={() => setSleepEditorOpen(false)}
+          onSave={saveSleepHours}
+        />
+      )}
+
       {pendingScopeChange && (
         <RecurrenceScopeDialog
           action="update"
@@ -1129,6 +1225,66 @@ export function WeekCalendar() {
         />
       )}
     </main>
+  );
+}
+
+function SleepHoursDialog({
+  value,
+  onClose,
+  onSave
+}: {
+  value: SleepHours;
+  onClose: () => void;
+  onSave: (value: SleepHours) => void;
+}) {
+  const [startTime, setStartTime] = useState(minutesToInput(value.startMinutes));
+  const [endTime, setEndTime] = useState(minutesToInput(value.endMinutes));
+  const [error, setError] = useState<string | null>(null);
+
+  function submit(formEvent: FormEvent) {
+    formEvent.preventDefault();
+    const nextValue = {
+      startMinutes: inputTimeToMinutes(startTime),
+      endMinutes: inputTimeToMinutes(endTime)
+    };
+    if (!isValidSleepHours(nextValue)) {
+      setError("Choose two different sleeping times.");
+      return;
+    }
+    onSave(nextValue);
+  }
+
+  return (
+    <div className="modal-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
+      <section className="scope-dialog sleep-dialog" role="dialog" aria-modal="true" aria-labelledby="sleep-dialog-title">
+        <div className="dialog-header">
+          <div>
+            <h2 id="sleep-dialog-title">Sleeping hours</h2>
+            <p>These hours will be shaded across every day.</p>
+          </div>
+          <button className="icon-button" type="button" onClick={onClose} aria-label="Close"><X size={18} /></button>
+        </div>
+
+        <form onSubmit={submit}>
+          <div className="sleep-time-grid">
+            <label className="field">
+              <span>Sleep from</span>
+              <input type="time" step={900} value={startTime} onChange={(event) => setStartTime(event.target.value)} required />
+            </label>
+            <label className="field">
+              <span>Wake at</span>
+              <input type="time" step={900} value={endTime} onChange={(event) => setEndTime(event.target.value)} required />
+            </label>
+          </div>
+          <p className="sleep-dialog-note">Overnight ranges are supported—for example, 11:00 PM to 7:00 AM.</p>
+          {error && <p className="form-error" role="alert">{error}</p>}
+          <div className="scope-actions">
+            <button className="secondary-button" type="button" onClick={onClose}>Cancel</button>
+            <button className="primary-button" type="submit">Save hours</button>
+          </div>
+        </form>
+      </section>
+    </div>
   );
 }
 
@@ -1180,8 +1336,8 @@ function EventDialog({
     }
     const start = new Date(`${date}T${time}:00`);
     const end = new Date(start.getTime() + duration * 60_000);
-    if (minutesOfDay(start) < DAY_START || dateKey(end) !== date || minutesOfDay(end) > DAY_END) {
-      setError("Choose a time between 7:00 AM and 10:00 PM.");
+    if (minutesOfDay(start) < DAY_START || !eventFitsVisibleDay(start, end)) {
+      setError("Events must end by midnight on the selected day.");
       return;
     }
     const input: EventInput = {
@@ -1290,7 +1446,7 @@ function EventDialog({
             </label>
             <label className="field">
               <span>Starts at</span>
-              <input type="time" value={time} min="07:00" max="21:45" step={900} onChange={(event) => setTime(event.target.value)} required />
+              <input type="time" value={time} min="00:00" max="23:45" step={900} onChange={(event) => setTime(event.target.value)} required />
             </label>
             <div className="field duration-field">
               <span>Duration</span>
@@ -1526,7 +1682,7 @@ function eventCardLayout(event: CalendarEvent, days: Date[]) {
   const end = new Date(event.endsAt);
   const dayIndex = days.findIndex((day) => dateKey(day) === dateKey(start));
   const startMinutes = minutesOfDay(start);
-  const endMinutes = minutesOfDay(end);
+  const endMinutes = calendarEndMinutes(start, end);
 
   if (dayIndex < 0 || startMinutes >= DAY_END || endMinutes <= DAY_START) return null;
 
@@ -1540,6 +1696,36 @@ function eventCardLayout(event: CalendarEvent, days: Date[]) {
 
 function dayColumnLeft(dayIndex: number) {
   return `calc((100% / 7) * ${dayIndex} + 5px)`;
+}
+
+function calendarEndMinutes(start: Date, end: Date) {
+  return dateKey(end) === dateKey(start) ? minutesOfDay(end) : DAY_END;
+}
+
+function eventFitsVisibleDay(start: Date, end: Date) {
+  return end.getTime() <= localDateAtMinutes(start, DAY_END).getTime();
+}
+
+function sleepHourSegments(sleepHours: SleepHours) {
+  if (sleepHours.startMinutes < sleepHours.endMinutes) {
+    return [{ startMinutes: sleepHours.startMinutes, endMinutes: sleepHours.endMinutes }];
+  }
+  return [
+    { startMinutes: DAY_START, endMinutes: sleepHours.endMinutes },
+    { startMinutes: sleepHours.startMinutes, endMinutes: DAY_END }
+  ].filter((segment) => segment.endMinutes > segment.startMinutes);
+}
+
+function isValidSleepHours(value: unknown): value is SleepHours {
+  if (!value || typeof value !== "object") return false;
+  const candidate = value as Partial<SleepHours>;
+  return Number.isInteger(candidate.startMinutes)
+    && Number.isInteger(candidate.endMinutes)
+    && candidate.startMinutes! >= DAY_START
+    && candidate.startMinutes! < DAY_END
+    && candidate.endMinutes! >= DAY_START
+    && candidate.endMinutes! < DAY_END
+    && candidate.startMinutes !== candidate.endMinutes;
 }
 
 function applyEventCardLayout(card: HTMLElement, event: CalendarEvent, days: Date[]) {
@@ -1634,6 +1820,18 @@ function formatWeekRange(start: Date, end: Date) {
   return `${month(start)} ${start.getDate()}, ${start.getFullYear()}–${month(end)} ${end.getDate()}, ${end.getFullYear()}`;
 }
 
+function formatCompactWeekRange(start: Date, end: Date) {
+  const month = (date: Date) => new Intl.DateTimeFormat("en", { month: "short" }).format(date);
+  const startYear = String(start.getFullYear()).slice(-2);
+  const endYear = String(end.getFullYear()).slice(-2);
+  const sameMonth = start.getMonth() === end.getMonth() && start.getFullYear() === end.getFullYear();
+  if (sameMonth) return `${month(start)} ${start.getDate()}–${end.getDate()} ’${endYear}`;
+  if (start.getFullYear() === end.getFullYear()) {
+    return `${month(start)} ${start.getDate()}–${month(end)} ${end.getDate()} ’${endYear}`;
+  }
+  return `${month(start)} ${start.getDate()} ’${startYear}–${month(end)} ${end.getDate()} ’${endYear}`;
+}
+
 function isDateInWeek(date: Date, days: Date[]) {
   return date >= days[0] && date < addDays(days[6], 1);
 }
@@ -1674,6 +1872,11 @@ function eventToDraft(event: CalendarEvent) {
 
 function minutesToInput(minutes: number) {
   return `${String(Math.floor(minutes / 60)).padStart(2, "0")}:${String(minutes % 60).padStart(2, "0")}`;
+}
+
+function inputTimeToMinutes(value: string) {
+  const [hours, minutes] = value.split(":").map(Number);
+  return hours * 60 + minutes;
 }
 
 function defaultRecurrenceEnd(date: string) {
