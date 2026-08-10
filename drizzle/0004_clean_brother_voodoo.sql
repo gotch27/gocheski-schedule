@@ -1,0 +1,2 @@
+ALTER TABLE "calendar_events" ADD COLUMN "recurrence_ends_on" date;--> statement-breakpoint
+ALTER TABLE "calendar_events" ADD CONSTRAINT "calendar_events_valid_recurrence_end" CHECK ("calendar_events"."recurrence_interval_weeks" is not null or "calendar_events"."recurrence_ends_on" is null);

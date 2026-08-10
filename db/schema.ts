@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { boolean, check, index, integer, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
+import { boolean, check, date, index, integer, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
 
 export const eventColors = ["violet", "blue", "coral", "green", "amber"] as const;
 export type EventColor = (typeof eventColors)[number];
@@ -14,6 +14,7 @@ export const calendarEvents = pgTable(
     endsAt: timestamp("ends_at", { withTimezone: true, mode: "date" }).notNull(),
     recurrenceIntervalWeeks: integer("recurrence_interval_weeks"),
     recurrenceTimeZone: text("recurrence_time_zone"),
+    recurrenceEndsOn: date("recurrence_ends_on"),
     color: text("color").$type<EventColor>().notNull().default("violet"),
     createdAt: timestamp("created_at", { withTimezone: true, mode: "date" }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true, mode: "date" }).notNull().defaultNow()
@@ -24,6 +25,10 @@ export const calendarEvents = pgTable(
     check(
       "calendar_events_valid_recurrence_interval",
       sql`${event.recurrenceIntervalWeeks} is null or ${event.recurrenceIntervalWeeks} between 1 and 52`
+    ),
+    check(
+      "calendar_events_valid_recurrence_end",
+      sql`${event.recurrenceIntervalWeeks} is not null or ${event.recurrenceEndsOn} is null`
     ),
     check("calendar_events_valid_color", sql`${event.color} in ('violet', 'blue', 'coral', 'green', 'amber')`)
   ]

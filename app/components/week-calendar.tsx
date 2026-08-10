@@ -24,6 +24,7 @@ type CalendarEvent = {
   endsAt: string;
   recurrenceIntervalWeeks: number | null;
   recurrenceTimeZone: string | null;
+  recurrenceEndsOn: string | null;
   recurrenceAnchorStartsAt: string;
   occurrenceStartsAt: string;
   isOccurrenceOverride: boolean;
@@ -32,7 +33,7 @@ type CalendarEvent = {
   updatedAt: string;
 };
 
-type EventInput = Pick<CalendarEvent, "title" | "description" | "startsAt" | "endsAt" | "recurrenceIntervalWeeks" | "recurrenceTimeZone" | "color">
+type EventInput = Pick<CalendarEvent, "title" | "description" | "startsAt" | "endsAt" | "recurrenceIntervalWeeks" | "recurrenceTimeZone" | "recurrenceEndsOn" | "color">
   & { occurrenceStartsAt?: string };
 
 type ApiEnvelope<T> = {
@@ -654,10 +655,15 @@ function EventDialog({
   const [description, setDescription] = useState(initial.description);
   const [date, setDate] = useState(initial.date);
   const [time, setTime] = useState(initial.time);
-  const [duration, setDuration] = useState(initial.duration);
+  const [durationHours, setDurationHours] = useState(String(Math.floor(initial.duration / 60)));
+  const [durationMinutes, setDurationMinutes] = useState(String(initial.duration % 60));
   const [color, setColor] = useState<EventColor>(initial.color);
   const [recurring, setRecurring] = useState(initial.recurrenceIntervalWeeks !== null);
   const [recurrenceIntervalWeeks, setRecurrenceIntervalWeeks] = useState(initial.recurrenceIntervalWeeks ?? 1);
+  const [recurrenceEndMode, setRecurrenceEndMode] = useState<"on" | "never">(
+    initial.recurrenceIntervalWeeks !== null && initial.recurrenceEndsOn === null ? "never" : "on"
+  );
+  const [recurrenceEndsOn, setRecurrenceEndsOn] = useState(initial.recurrenceEndsOn ?? defaultRecurrenceEnd(initial.date));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [scopedAction, setScopedAction] = useState<EditorScopedAction | null>(null);
@@ -665,6 +671,17 @@ function EventDialog({
   async function submit(formEvent: FormEvent) {
     formEvent.preventDefault();
     if (!title.trim()) return;
+    const hours = Number(durationHours);
+    const minutes = Number(durationMinutes);
+    if (!Number.isInteger(hours) || hours < 0 || hours > 15 || !Number.isInteger(minutes) || minutes < 0 || minutes > 59) {
+      setError("Enter a valid duration in hours and minutes.");
+      return;
+    }
+    const duration = hours * 60 + minutes;
+    if (duration < SLOT_MINUTES) {
+      setError("Events must be at least 15 minutes long.");
+      return;
+    }
     const start = new Date(`${date}T${time}:00`);
     const end = new Date(start.getTime() + duration * 60_000);
     if (minutesOfDay(start) < DAY_START || dateKey(end) !== date || minutesOfDay(end) > DAY_END) {
@@ -680,6 +697,7 @@ function EventDialog({
       recurrenceTimeZone: recurring
         ? existing?.recurrenceTimeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone ?? "UTC"
         : null,
+      recurrenceEndsOn: recurring && recurrenceEndMode === "on" ? recurrenceEndsOn : null,
       ...(existing ? { occurrenceStartsAt: existing.occurrenceStartsAt } : {}),
       color
     };
@@ -747,7 +765,6 @@ function EventDialog({
       <section className="event-dialog" role="dialog" aria-modal="true" aria-labelledby="event-dialog-title">
         <div className="dialog-header">
           <div>
-            <p className="eyebrow">{existing ? "Edit time block" : "New time block"}</p>
             <h2 id="event-dialog-title">{existing ? "Make a change" : "What are you making time for?"}</h2>
           </div>
           <button className="icon-button" type="button" onClick={onClose} aria-label="Close"><X size={18} /></button>
@@ -762,20 +779,56 @@ function EventDialog({
           <div className="form-grid">
             <label className="field">
               <span>Day</span>
-              <input type="date" value={date} onChange={(event) => setDate(event.target.value)} required />
+              <input
+                type="date"
+                value={date}
+                onChange={(event) => {
+                  const nextDate = event.target.value;
+                  setDate(nextDate);
+                  if (recurrenceEndMode === "on" && recurrenceEndsOn < nextDate) {
+                    setRecurrenceEndsOn(defaultRecurrenceEnd(nextDate));
+                  }
+                }}
+                required
+              />
             </label>
             <label className="field">
               <span>Starts at</span>
               <input type="time" value={time} min="07:00" max="21:45" step={900} onChange={(event) => setTime(event.target.value)} required />
             </label>
-            <label className="field">
+            <div className="field duration-field">
               <span>Duration</span>
-              <select value={duration} onChange={(event) => setDuration(Number(event.target.value))}>
-                {[15, 30, 45, 60, 90, 120, 180].map((minutes) => (
-                  <option value={minutes} key={minutes}>{formatDuration(minutes)}</option>
-                ))}
-              </select>
-            </label>
+              <div className="duration-inputs">
+                <label>
+                  <input
+                    aria-label="Duration hours"
+                    type="number"
+                    min={0}
+                    max={15}
+                    step={1}
+                    inputMode="numeric"
+                    value={durationHours}
+                    onChange={(event) => setDurationHours(event.target.value)}
+                    required
+                  />
+                  <span>hr</span>
+                </label>
+                <label>
+                  <input
+                    aria-label="Duration minutes"
+                    type="number"
+                    min={0}
+                    max={59}
+                    step={1}
+                    inputMode="numeric"
+                    value={durationMinutes}
+                    onChange={(event) => setDurationMinutes(event.target.value)}
+                    required
+                  />
+                  <span>min</span>
+                </label>
+              </div>
+            </div>
           </div>
 
           <div className={`recurrence-control${recurring ? " is-enabled" : ""}`}>
@@ -791,19 +844,42 @@ function EventDialog({
               </span>
             </label>
             {recurring && (
-              <label className="recurrence-frequency">
-                <span>Every</span>
-                <input
-                  aria-label="Repeat interval in weeks"
-                  type="number"
-                  min={1}
-                  max={52}
-                  step={1}
-                  value={recurrenceIntervalWeeks}
-                  onChange={(event) => setRecurrenceIntervalWeeks(clamp(Number(event.target.value) || 1, 1, 52))}
-                />
-                <span>{recurrenceIntervalWeeks === 1 ? "week" : "weeks"}</span>
-              </label>
+              <div className="recurrence-settings">
+                <label className="recurrence-frequency">
+                  <span>Every</span>
+                  <input
+                    aria-label="Repeat interval in weeks"
+                    type="number"
+                    min={1}
+                    max={52}
+                    step={1}
+                    value={recurrenceIntervalWeeks}
+                    onChange={(event) => setRecurrenceIntervalWeeks(clamp(Number(event.target.value) || 1, 1, 52))}
+                  />
+                  <span>{recurrenceIntervalWeeks === 1 ? "week" : "weeks"}</span>
+                </label>
+                <label className="recurrence-end">
+                  <span>Ends</span>
+                  <select
+                    aria-label="Repeat end condition"
+                    value={recurrenceEndMode}
+                    onChange={(event) => setRecurrenceEndMode(event.target.value as "on" | "never")}
+                  >
+                    <option value="on">On</option>
+                    <option value="never">Never</option>
+                  </select>
+                  {recurrenceEndMode === "on" && (
+                    <input
+                      aria-label="Repeat end date"
+                      type="date"
+                      min={date}
+                      value={recurrenceEndsOn}
+                      onChange={(event) => setRecurrenceEndsOn(event.target.value)}
+                      required
+                    />
+                  )}
+                </label>
+              </div>
             )}
           </div>
 
@@ -899,6 +975,7 @@ function eventPatchBody(event: CalendarEvent, scope: RecurringEventScope) {
     endsAt: event.endsAt,
     recurrenceIntervalWeeks: event.recurrenceIntervalWeeks,
     recurrenceTimeZone: event.recurrenceTimeZone,
+    recurrenceEndsOn: event.recurrenceEndsOn,
     occurrenceStartsAt: event.occurrenceStartsAt,
     scope,
     color: event.color
@@ -916,6 +993,7 @@ function hasSameEditableValues(left: CalendarEvent, right: CalendarEvent) {
     && left.endsAt === right.endsAt
     && left.recurrenceIntervalWeeks === right.recurrenceIntervalWeeks
     && left.recurrenceTimeZone === right.recurrenceTimeZone
+    && left.recurrenceEndsOn === right.recurrenceEndsOn
     && left.color === right.color;
 }
 
@@ -1004,9 +1082,13 @@ function formatEventTime(event: CalendarEvent) {
 
 function formatRecurrenceForAria(event: CalendarEvent) {
   if (event.recurrenceIntervalWeeks === null) return "";
-  return event.recurrenceIntervalWeeks === 1
+  const frequency = event.recurrenceIntervalWeeks === 1
     ? " Repeats every week."
     : ` Repeats every ${event.recurrenceIntervalWeeks} weeks.`;
+  if (!event.recurrenceEndsOn) return frequency;
+  const endDate = new Intl.DateTimeFormat("en", { dateStyle: "long", timeZone: "UTC" })
+    .format(new Date(`${event.recurrenceEndsOn}T00:00:00Z`));
+  return `${frequency.slice(0, -1)} through ${endDate}.`;
 }
 
 function formatWeekRange(start: Date, end: Date) {
@@ -1017,13 +1099,6 @@ function formatWeekRange(start: Date, end: Date) {
     year: "numeric"
   }).format(end);
   return `${startText} – ${endText}`;
-}
-
-function formatDuration(minutes: number) {
-  if (minutes < 60) return `${minutes} min`;
-  const hours = Math.floor(minutes / 60);
-  const remainder = minutes % 60;
-  return remainder ? `${hours} hr ${remainder} min` : `${hours} ${hours === 1 ? "hour" : "hours"}`;
 }
 
 function isDateInWeek(date: Date, days: Date[]) {
@@ -1040,6 +1115,7 @@ function newEventDraft(date: string) {
     time: minutesToInput(rounded),
     duration: 60,
     recurrenceIntervalWeeks: null,
+    recurrenceEndsOn: null,
     color: "violet" as EventColor
   };
 }
@@ -1054,12 +1130,17 @@ function eventToDraft(event: CalendarEvent) {
     time: minutesToInput(minutesOfDay(start)),
     duration,
     recurrenceIntervalWeeks: event.recurrenceIntervalWeeks,
+    recurrenceEndsOn: event.recurrenceEndsOn,
     color: event.color
   };
 }
 
 function minutesToInput(minutes: number) {
   return `${String(Math.floor(minutes / 60)).padStart(2, "0")}:${String(minutes % 60).padStart(2, "0")}`;
+}
+
+function defaultRecurrenceEnd(date: string) {
+  return dateKey(addDays(parseDateKey(date), 12 * 7));
 }
 
 function compareEvents(left: CalendarEvent, right: CalendarEvent) {

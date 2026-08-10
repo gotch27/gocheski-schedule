@@ -11,31 +11,89 @@ const eventFields = {
   endsAt: z.iso.datetime({ offset: true }),
   recurrenceIntervalWeeks: z.number().int().min(1).max(52).nullable().default(null),
   recurrenceTimeZone: z.string().trim().min(1).max(100).nullable().default(null),
+  recurrenceEndsOn: z.iso.date().nullable().default(null),
   color: eventColorSchema.default("violet")
 };
 
-const validEventRange = (event: { startsAt: string; endsAt: string }) =>
-  new Date(event.endsAt).getTime() > new Date(event.startsAt).getTime();
+type EventFields = {
+  startsAt: string;
+  endsAt: string;
+  recurrenceIntervalWeeks: number | null;
+  recurrenceTimeZone: string | null;
+  recurrenceEndsOn: string | null;
+};
+
+function validateEvent(event: EventFields, ctx: z.RefinementCtx) {
+  const duration = new Date(event.endsAt).getTime() - new Date(event.startsAt).getTime();
+
+  if (duration < 15 * 60_000) {
+    ctx.addIssue({
+      code: "custom",
+      message: "The event must be at least 15 minutes long.",
+      path: ["endsAt"]
+    });
+  }
+
+  if (event.recurrenceIntervalWeeks === null && event.recurrenceEndsOn !== null) {
+    ctx.addIssue({
+      code: "custom",
+      message: "A repeat end date requires a repeating event.",
+      path: ["recurrenceEndsOn"]
+    });
+  }
+
+  if (
+    event.recurrenceIntervalWeeks !== null
+    && event.recurrenceEndsOn !== null
+    && event.recurrenceEndsOn < dateKeyInTimeZone(new Date(event.startsAt), event.recurrenceTimeZone)
+  ) {
+    ctx.addIssue({
+      code: "custom",
+      message: "The repeat end date cannot be before the first event.",
+      path: ["recurrenceEndsOn"]
+    });
+  }
+}
+
+function dateKeyInTimeZone(date: Date, timeZone: string | null) {
+  let formatter: Intl.DateTimeFormat;
+  try {
+    formatter = new Intl.DateTimeFormat("en-CA", {
+      timeZone: timeZone ?? "UTC",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit"
+    });
+  } catch {
+    formatter = new Intl.DateTimeFormat("en-CA", {
+      timeZone: "UTC",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit"
+    });
+  }
+
+  const parts = Object.fromEntries(
+    formatter.formatToParts(date)
+      .filter((part) => part.type !== "literal")
+      .map((part) => [part.type, part.value])
+  );
+  return `${parts.year}-${parts.month}-${parts.day}`;
+}
 
 export const listEventsInputSchema = z.object({
   weekStart: z.iso.datetime({ offset: true }),
   weekEnd: z.iso.datetime({ offset: true })
 });
 
-export const createEventInputSchema = z.object(eventFields).refine(validEventRange, {
-  message: "The event must end after it starts.",
-  path: ["endsAt"]
-});
+export const createEventInputSchema = z.object(eventFields).superRefine(validateEvent);
 
 export const updateEventInputSchema = z.object({
   id: z.uuid(),
   occurrenceStartsAt: z.iso.datetime({ offset: true }).optional(),
   scope: recurringEventScopeSchema.default("series"),
   ...eventFields
-}).refine(validEventRange, {
-  message: "The event must end after it starts.",
-  path: ["endsAt"]
-});
+}).superRefine(validateEvent);
 
 export const deleteEventInputSchema = z.object({
   id: z.uuid(),

@@ -19,6 +19,7 @@ export type CalendarEvent = {
   endsAt: string;
   recurrenceIntervalWeeks: number | null;
   recurrenceTimeZone: string | null;
+  recurrenceEndsOn: string | null;
   recurrenceAnchorStartsAt: string;
   occurrenceStartsAt: string;
   isOccurrenceOverride: boolean;
@@ -153,6 +154,7 @@ export const services = {
           endsAt: new Date(input.endsAt),
           recurrenceIntervalWeeks: input.recurrenceIntervalWeeks,
           recurrenceTimeZone: input.recurrenceIntervalWeeks === null ? null : input.recurrenceTimeZone ?? "UTC",
+          recurrenceEndsOn: input.recurrenceIntervalWeeks === null ? null : input.recurrenceEndsOn,
           color: input.color
         })
         .returning();
@@ -231,6 +233,7 @@ export const services = {
           endsAt: storedEnd,
           recurrenceIntervalWeeks: input.recurrenceIntervalWeeks,
           recurrenceTimeZone,
+          recurrenceEndsOn: input.recurrenceIntervalWeeks === null ? null : input.recurrenceEndsOn,
           color: input.color,
           updatedAt: new Date()
         })
@@ -314,6 +317,7 @@ function occurrencesInRange(
   for (let index = firstIndex; ; index += 1) {
     const startsAt = addWeeksInTimeZone(record.startsAt, index * record.recurrenceIntervalWeeks, timeZone);
     if (startsAt >= rangeEnd) break;
+    if (record.recurrenceEndsOn && dateKeyInTimeZone(startsAt, timeZone) > record.recurrenceEndsOn) break;
 
     const endsAt = new Date(startsAt.getTime() + duration);
     const occurrenceKey = startsAt.toISOString();
@@ -332,6 +336,7 @@ function occurrencesInRange(
 
   for (const exception of exceptions) {
     if (exception.isCancelled || consideredOccurrences.has(exception.occurrenceStartsAt.toISOString())) continue;
+    if (record.recurrenceEndsOn && dateKeyInTimeZone(exception.occurrenceStartsAt, timeZone) > record.recurrenceEndsOn) continue;
     const overridden = toExceptionCalendarEvent(record, exception);
     if (eventOverlapsRange(overridden, rangeStart, rangeEnd)) occurrences.push(overridden);
   }
@@ -433,6 +438,11 @@ function zonedParts(date: Date, timeZone: string): DateParts {
 
 function partsAsUtc(parts: DateParts) {
   return Date.UTC(parts.year, parts.month - 1, parts.day, parts.hour, parts.minute, parts.second);
+}
+
+function dateKeyInTimeZone(date: Date, timeZone: string) {
+  const parts = zonedParts(date, timeZone);
+  return `${parts.year}-${String(parts.month).padStart(2, "0")}-${String(parts.day).padStart(2, "0")}`;
 }
 
 function validTimeZone(timeZone: string | null) {
