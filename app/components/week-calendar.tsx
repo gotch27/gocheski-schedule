@@ -878,17 +878,7 @@ export function WeekCalendar() {
         <a className="brand-logo-link" href="/schedule" aria-label="Gocheski home">
           <img className="brand-logo" src="/schedule/goch-mark.svg" alt="" draggable="false" />
         </a>
-        <div className="topbar-actions">
-          <button className="logout-button" type="button" onClick={() => void logout()}>
-            <LogOut size={14} /> <span>Log out</span>
-          </button>
-          <button className="primary-button" type="button" onClick={() => openCreate()}>
-            <Plus size={16} strokeWidth={2.6} /> Event
-          </button>
-        </div>
-      </header>
 
-      <section className="calendar-section" id="calendar" aria-label="Weekly calendar">
         <div className="calendar-toolbar">
           <h1>{formatWeekRange(weekStart, days[6])}</h1>
           <div className="calendar-actions">
@@ -900,6 +890,19 @@ export function WeekCalendar() {
           </div>
         </div>
 
+        <div className="topbar-utilities" aria-hidden="true" />
+
+        <div className="topbar-actions">
+          <button className="logout-button" type="button" onClick={() => void logout()}>
+            <LogOut size={14} /> <span>Log out</span>
+          </button>
+          <button className="primary-button" type="button" onClick={() => openCreate()}>
+            <Plus size={16} strokeWidth={2.6} /> <span>Event</span>
+          </button>
+        </div>
+      </header>
+
+      <section className="calendar-section" id="calendar" aria-label="Weekly calendar">
         {loadError && (
           <div className="connection-banner" role="status">
             <span><span className="connection-dot" /> Database setup needed</span>
@@ -1622,13 +1625,13 @@ function formatRecurrenceForAria(event: CalendarEvent) {
 }
 
 function formatWeekRange(start: Date, end: Date) {
-  const startText = new Intl.DateTimeFormat("en", { month: "long", day: "numeric" }).format(start);
-  const endText = new Intl.DateTimeFormat("en", {
-    month: start.getMonth() === end.getMonth() ? undefined : "long",
-    day: "numeric",
-    year: "numeric"
-  }).format(end);
-  return `${startText} – ${endText}`;
+  const month = (date: Date) => new Intl.DateTimeFormat("en", { month: "short" }).format(date);
+  const sameMonth = start.getMonth() === end.getMonth() && start.getFullYear() === end.getFullYear();
+  const sameYear = start.getFullYear() === end.getFullYear();
+
+  if (sameMonth) return `${month(start)} ${start.getDate()}–${end.getDate()}, ${end.getFullYear()}`;
+  if (sameYear) return `${month(start)} ${start.getDate()}–${month(end)} ${end.getDate()}, ${end.getFullYear()}`;
+  return `${month(start)} ${start.getDate()}, ${start.getFullYear()}–${month(end)} ${end.getDate()}, ${end.getFullYear()}`;
 }
 
 function isDateInWeek(date: Date, days: Date[]) {
