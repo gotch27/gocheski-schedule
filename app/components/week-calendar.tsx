@@ -4,13 +4,25 @@ import {
   Check,
   ChevronLeft,
   ChevronRight,
+  ClipboardPaste,
+  Copy,
   GripHorizontal,
   LogOut,
+  Pencil,
   Plus,
   Trash2,
   X
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type PointerEvent as ReactPointerEvent } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type FormEvent,
+  type MouseEvent as ReactMouseEvent,
+  type PointerEvent as ReactPointerEvent
+} from "react";
 
 type EventColor = "violet" | "blue" | "coral" | "green" | "amber";
 type RecurringEventScope = "series" | "occurrence";
@@ -43,7 +55,7 @@ type ApiEnvelope<T> = {
 };
 
 type EditorState =
-  | { mode: "create"; date: string }
+  | { mode: "create"; date: string; startMinutes?: number }
   | { mode: "edit"; event: CalendarEvent };
 
 type DragState = {
@@ -52,16 +64,33 @@ type DragState = {
   mode: "move" | "resize";
   original: CalendarEvent;
   current: CalendarEvent;
+  originals: CalendarEvent[];
+  currentEvents: CalendarEvent[];
   grabOffsetY: number;
   startClientX: number;
   startClientY: number;
   moved: boolean;
 };
 
+type SelectionDragState = {
+  pointerId: number;
+  startX: number;
+  startY: number;
+  moved: boolean;
+};
+
+type SelectionBox = {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+};
+
 type PendingSave = {
   baseline: CalendarEvent;
   latest: CalendarEvent;
   scope: RecurringEventScope;
+  reloadAfterSave: boolean;
   timer: number;
 };
 
@@ -73,6 +102,44 @@ type PendingScopeChange = {
 type EditorScopedAction =
   | { kind: "save"; input: EventInput }
   | { kind: "delete" };
+
+type EventClipboard = Pick<CalendarEvent, "title" | "description" | "color"> & {
+  durationMinutes: number;
+};
+
+type CalendarContextMenu = {
+  kind: "calendar";
+  x: number;
+  y: number;
+  dayIndex: number;
+  startMinutes: number;
+};
+
+type EventContextMenu = {
+  kind: "event";
+  x: number;
+  y: number;
+  event: CalendarEvent;
+};
+
+type SelectionContextMenu = {
+  kind: "selection";
+  x: number;
+  y: number;
+  events: CalendarEvent[];
+};
+
+type ContextMenu = CalendarContextMenu | EventContextMenu | SelectionContextMenu;
+
+type ContextDelete = {
+  event: CalendarEvent;
+  busy: boolean;
+};
+
+type BulkDelete = {
+  events: CalendarEvent[];
+  busy: boolean;
+};
 
 const DAY_START = 7 * 60;
 const DAY_END = 22 * 60;
@@ -100,11 +167,17 @@ export function WeekCalendar() {
   const [editor, setEditor] = useState<EditorState | null>(null);
   const [activeEventKey, setActiveEventKey] = useState<string | null>(null);
   const [pendingScopeChange, setPendingScopeChange] = useState<PendingScopeChange | null>(null);
+  const [eventClipboard, setEventClipboard] = useState<EventClipboard | null>(null);
+  const [contextMenu, setContextMenu] = useState<ContextMenu | null>(null);
+  const [contextDelete, setContextDelete] = useState<ContextDelete | null>(null);
+  const [selectedEventKeys, setSelectedEventKeys] = useState<Set<string>>(() => new Set());
+  const [selectionBox, setSelectionBox] = useState<SelectionBox | null>(null);
+  const [bulkDelete, setBulkDelete] = useState<BulkDelete | null>(null);
   const [now, setNow] = useState(() => new Date());
   const timelineRef = useRef<HTMLDivElement>(null);
   const dragRef = useRef<DragState | null>(null);
-  const dragCardRef = useRef<HTMLElement | null>(null);
   const dragFrameRef = useRef<number | null>(null);
+  const selectionDragRef = useRef<SelectionDragState | null>(null);
   const pendingSavesRef = useRef(new Map<string, PendingSave>());
   const persistedEventsRef = useRef(new Map<string, CalendarEvent>());
 
@@ -139,6 +212,11 @@ export function WeekCalendar() {
   }, [loadEvents]);
 
   useEffect(() => {
+    setSelectedEventKeys(new Set());
+    setSelectionBox(null);
+  }, [weekStartKey]);
+
+  useEffect(() => {
     const timer = window.setInterval(() => setNow(new Date()), 60_000);
     return () => window.clearInterval(timer);
   }, []);
@@ -148,6 +226,28 @@ export function WeekCalendar() {
     const timer = window.setTimeout(() => setNotice(null), 2600);
     return () => window.clearTimeout(timer);
   }, [notice]);
+
+  useEffect(() => {
+    if (!contextMenu) return;
+
+    const closeMenu = () => setContextMenu(null);
+    const closeMenuOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") closeMenu();
+    };
+
+    document.addEventListener("click", closeMenu);
+    document.addEventListener("keydown", closeMenuOnEscape);
+    window.addEventListener("blur", closeMenu);
+    window.addEventListener("resize", closeMenu);
+    window.addEventListener("scroll", closeMenu, true);
+    return () => {
+      document.removeEventListener("click", closeMenu);
+      document.removeEventListener("keydown", closeMenuOnEscape);
+      window.removeEventListener("blur", closeMenu);
+      window.removeEventListener("resize", closeMenu);
+      window.removeEventListener("scroll", closeMenu, true);
+    };
+  }, [contextMenu]);
 
   useEffect(() => {
     function flushPendingSaves() {
@@ -206,8 +306,27 @@ export function WeekCalendar() {
     window.location.replace("/schedule");
   }
 
-  function openCreate(date = dateKey(isDateInWeek(new Date(), days) ? new Date() : days[0])) {
-    setEditor({ mode: "create", date });
+  function openCreate(
+    date = dateKey(isDateInWeek(new Date(), days) ? new Date() : days[0]),
+    startMinutes?: number
+  ) {
+    setEditor({ mode: "create", date, startMinutes });
+  }
+
+  async function createEvent(input: EventInput, successNotice: string) {
+    const data = await apiRequest<{ event: CalendarEvent }>(EVENTS_API_PATH, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(input)
+    });
+    const createdWeek = dateKey(startOfWeek(new Date(data.event.startsAt)));
+    if (createdWeek !== weekStartKey) {
+      setWeekStartKey(createdWeek);
+    } else {
+      setEvents((current) => [...current, data.event].sort(compareEvents));
+    }
+    persistedEventsRef.current.set(data.event.occurrenceKey, data.event);
+    setNotice(successNotice);
   }
 
   async function saveFromEditor(
@@ -225,21 +344,173 @@ export function WeekCalendar() {
       await persistEvent(optimistic, rollback, scope);
       setNotice(scope === "occurrence" ? "Event updated" : "Series updated");
     } else {
-      const data = await apiRequest<{ event: CalendarEvent }>(EVENTS_API_PATH, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(input)
-      });
-      const createdWeek = dateKey(startOfWeek(new Date(data.event.startsAt)));
-      if (createdWeek !== weekStartKey) {
-        setWeekStartKey(createdWeek);
-      } else {
-        setEvents((current) => [...current, data.event].sort(compareEvents));
-      }
-      persistedEventsRef.current.set(data.event.occurrenceKey, data.event);
-      setNotice("Event created");
+      await createEvent(input, "Event created");
     }
     setEditor(null);
+  }
+
+  function openEventContextMenu(mouseEvent: ReactMouseEvent, event: CalendarEvent) {
+    mouseEvent.preventDefault();
+    mouseEvent.stopPropagation();
+    const selectedEvents = selectedEventKeys.has(event.occurrenceKey)
+      ? events.filter((item) => selectedEventKeys.has(item.occurrenceKey))
+      : [];
+
+    if (selectedEvents.length > 1) {
+      setContextMenu({
+        kind: "selection",
+        ...contextMenuPosition(mouseEvent.clientX, mouseEvent.clientY, 50),
+        events: selectedEvents
+      });
+      return;
+    }
+
+    setSelectedEventKeys(new Set());
+    setContextMenu({
+      kind: "event",
+      ...contextMenuPosition(mouseEvent.clientX, mouseEvent.clientY, 126),
+      event
+    });
+  }
+
+  function openCalendarContextMenu(mouseEvent: ReactMouseEvent<HTMLDivElement>) {
+    mouseEvent.preventDefault();
+    const timeline = timelineRef.current;
+    if (!timeline) return;
+
+    const rect = timeline.getBoundingClientRect();
+    const contentX = mouseEvent.clientX - rect.left - TIME_GUTTER;
+    if (contentX < 0 || contentX >= rect.width - TIME_GUTTER) {
+      setContextMenu(null);
+      return;
+    }
+
+    const dayWidth = (rect.width - TIME_GUTTER) / 7;
+    const dayIndex = clamp(Math.floor(contentX / dayWidth), 0, 6);
+    const startMinutes = clamp(
+      snapMinutes(DAY_START + ((mouseEvent.clientY - rect.top) / rect.height) * TOTAL_MINUTES),
+      DAY_START,
+      DAY_END - SLOT_MINUTES
+    );
+    setContextMenu({
+      kind: "calendar",
+      ...contextMenuPosition(mouseEvent.clientX, mouseEvent.clientY, eventClipboard ? 88 : 50),
+      dayIndex,
+      startMinutes
+    });
+  }
+
+  function addEventFromContextMenu(menu: CalendarContextMenu) {
+    setContextMenu(null);
+    openCreate(dateKey(days[menu.dayIndex]), menu.startMinutes);
+  }
+
+  function copyEventOccurrence(event: CalendarEvent) {
+    const durationMinutes = Math.max(
+      SLOT_MINUTES,
+      Math.round((new Date(event.endsAt).getTime() - new Date(event.startsAt).getTime()) / 60_000)
+    );
+    setEventClipboard({
+      title: event.title,
+      description: event.description,
+      color: event.color,
+      durationMinutes
+    });
+    setContextMenu(null);
+    setNotice("Event copied");
+  }
+
+  function editEventFromContextMenu(event: CalendarEvent) {
+    setContextMenu(null);
+    setEditor({ mode: "edit", event });
+  }
+
+  async function deleteEventFromContextMenu(event: CalendarEvent) {
+    setContextMenu(null);
+    if (needsRecurrenceScopeChoice(event)) {
+      setContextDelete({ event, busy: false });
+      return;
+    }
+
+    try {
+      await deleteFromEditor(event, event.isOccurrenceOverride ? "occurrence" : "series");
+    } catch (error) {
+      setNotice(readError(error));
+    }
+  }
+
+  async function confirmContextDelete(scope: RecurringEventScope) {
+    if (!contextDelete) return;
+    setContextDelete({ ...contextDelete, busy: true });
+    try {
+      await deleteFromEditor(contextDelete.event, scope);
+      setContextDelete(null);
+    } catch (error) {
+      setNotice(readError(error));
+      setContextDelete({ ...contextDelete, busy: false });
+    }
+  }
+
+  function requestBulkDelete(selectedEvents: CalendarEvent[]) {
+    setContextMenu(null);
+    setBulkDelete({ events: selectedEvents, busy: false });
+  }
+
+  async function confirmBulkDelete() {
+    if (!bulkDelete) return;
+    const selectedEvents = bulkDelete.events;
+    setBulkDelete({ ...bulkDelete, busy: true });
+    let deletedCount = 0;
+
+    try {
+      for (const event of selectedEvents) {
+        const scope: RecurringEventScope = event.recurrenceIntervalWeeks !== null ? "occurrence" : "series";
+        await deleteFromEditor(event, scope);
+        deletedCount += 1;
+      }
+      setSelectedEventKeys(new Set());
+      setBulkDelete(null);
+      setNotice(`${deletedCount} events deleted`);
+    } catch (error) {
+      setSelectedEventKeys(new Set());
+      setBulkDelete(null);
+      const prefix = deletedCount > 0 ? `${deletedCount} events deleted. ` : "";
+      setNotice(`${prefix}${readError(error)}`);
+    }
+  }
+
+  async function pasteEvent(menu: CalendarContextMenu) {
+    if (!eventClipboard) return;
+    setContextMenu(null);
+
+    if (eventClipboard.durationMinutes > TOTAL_MINUTES) {
+      setNotice("This event is too long to paste into one day");
+      return;
+    }
+
+    const startMinutes = clamp(
+      menu.startMinutes,
+      DAY_START,
+      DAY_END - eventClipboard.durationMinutes
+    );
+    const startsAt = localDateAtMinutes(days[menu.dayIndex], startMinutes);
+    const endsAt = new Date(startsAt.getTime() + eventClipboard.durationMinutes * 60_000);
+    const input: EventInput = {
+      title: eventClipboard.title,
+      description: eventClipboard.description,
+      startsAt: startsAt.toISOString(),
+      endsAt: endsAt.toISOString(),
+      recurrenceIntervalWeeks: null,
+      recurrenceTimeZone: null,
+      recurrenceEndsOn: null,
+      color: eventClipboard.color
+    };
+
+    try {
+      await createEvent(input, "Event pasted");
+    } catch (error) {
+      setNotice(readError(error));
+    }
   }
 
   async function deleteFromEditor(event: CalendarEvent, scope: RecurringEventScope = "series") {
@@ -255,7 +526,7 @@ export function WeekCalendar() {
         })
       });
     } catch (error) {
-      if (pending) scheduleEventSave(pending.latest, pending.baseline, pending.scope);
+      if (pending) scheduleEventSave(pending.latest, pending.baseline, pending.scope, pending.reloadAfterSave);
       throw error;
     }
     if (scope === "series") {
@@ -271,7 +542,12 @@ export function WeekCalendar() {
     setNotice(scope === "occurrence" ? "Event deleted" : "Series deleted");
   }
 
-  async function persistEvent(updated: CalendarEvent, previous: CalendarEvent, scope: RecurringEventScope) {
+  async function persistEvent(
+    updated: CalendarEvent,
+    previous: CalendarEvent,
+    scope: RecurringEventScope,
+    reloadAfterSave = scope === "series"
+  ) {
     const eventKey = updated.occurrenceKey;
     try {
       const data = await apiRequest<{ event: CalendarEvent }>(EVENTS_API_PATH, {
@@ -287,7 +563,7 @@ export function WeekCalendar() {
         if (event.occurrenceKey !== eventKey) return event;
         return hasSameEditableValues(event, updated) ? data.event : event;
       }).sort(compareEvents));
-      if (scope === "series") void loadEvents();
+      if (reloadAfterSave) void loadEvents();
     } catch (error) {
       setEvents((current) => current.map((event) => {
         if (event.occurrenceKey !== previous.occurrenceKey) return event;
@@ -301,7 +577,8 @@ export function WeekCalendar() {
   function scheduleEventSave(
     updated: CalendarEvent,
     fallbackBaseline: CalendarEvent,
-    scope: RecurringEventScope
+    scope: RecurringEventScope,
+    reloadAfterSave = scope === "series"
   ) {
     const eventKey = updated.occurrenceKey;
     const existing = pendingSavesRef.current.get(eventKey);
@@ -313,11 +590,11 @@ export function WeekCalendar() {
       if (!pending || pending.timer !== timer) return;
 
       pendingSavesRef.current.delete(eventKey);
-      void persistEvent(pending.latest, pending.baseline, pending.scope)
+      void persistEvent(pending.latest, pending.baseline, pending.scope, pending.reloadAfterSave)
         .catch(() => undefined);
     }, SAVE_DELAY_MS);
 
-    pendingSavesRef.current.set(eventKey, { baseline, latest: updated, scope, timer });
+    pendingSavesRef.current.set(eventKey, { baseline, latest: updated, scope, reloadAfterSave, timer });
   }
 
   function cancelScheduledSave(eventKey: string) {
@@ -329,25 +606,108 @@ export function WeekCalendar() {
     return pending;
   }
 
+  function startSelection(pointerEvent: ReactPointerEvent<HTMLDivElement>) {
+    if (pointerEvent.button !== 0 || (pointerEvent.target as HTMLElement).closest(".calendar-event")) return;
+    const timeline = timelineRef.current;
+    if (!timeline) return;
+
+    const rect = timeline.getBoundingClientRect();
+    const startX = clamp(pointerEvent.clientX - rect.left, TIME_GUTTER, rect.width);
+    const startY = clamp(pointerEvent.clientY - rect.top, 0, rect.height);
+    if (pointerEvent.clientX - rect.left < TIME_GUTTER) return;
+
+    timeline.setPointerCapture(pointerEvent.pointerId);
+    selectionDragRef.current = {
+      pointerId: pointerEvent.pointerId,
+      startX,
+      startY,
+      moved: false
+    };
+    setSelectedEventKeys(new Set());
+    setSelectionBox(null);
+    setContextMenu(null);
+    pointerEvent.preventDefault();
+  }
+
+  function moveSelection(pointerEvent: ReactPointerEvent<HTMLDivElement>) {
+    const selection = selectionDragRef.current;
+    const timeline = timelineRef.current;
+    if (!selection || !timeline || selection.pointerId !== pointerEvent.pointerId) return;
+
+    const rect = timeline.getBoundingClientRect();
+    const currentX = clamp(pointerEvent.clientX - rect.left, TIME_GUTTER, rect.width);
+    const currentY = clamp(pointerEvent.clientY - rect.top, 0, rect.height);
+    if (!selection.moved && Math.hypot(currentX - selection.startX, currentY - selection.startY) < 4) return;
+
+    const box = {
+      left: Math.min(selection.startX, currentX),
+      top: Math.min(selection.startY, currentY),
+      width: Math.abs(currentX - selection.startX),
+      height: Math.abs(currentY - selection.startY)
+    };
+    selectionDragRef.current = { ...selection, moved: true };
+    setSelectionBox(box);
+
+    const selectionRect = {
+      left: rect.left + box.left,
+      top: rect.top + box.top,
+      right: rect.left + box.left + box.width,
+      bottom: rect.top + box.top + box.height
+    };
+    const selected = new Set<string>();
+    timeline.querySelectorAll<HTMLElement>(".calendar-event").forEach((card) => {
+      const cardRect = card.getBoundingClientRect();
+      const intersects = cardRect.left < selectionRect.right
+        && cardRect.right > selectionRect.left
+        && cardRect.top < selectionRect.bottom
+        && cardRect.bottom > selectionRect.top;
+      if (intersects && card.dataset.eventKey) selected.add(card.dataset.eventKey);
+    });
+    setSelectedEventKeys(selected);
+    pointerEvent.preventDefault();
+  }
+
+  function endSelection(pointerEvent: ReactPointerEvent<HTMLDivElement>) {
+    const selection = selectionDragRef.current;
+    if (!selection || selection.pointerId !== pointerEvent.pointerId) return;
+    selectionDragRef.current = null;
+    setSelectionBox(null);
+  }
+
+  function cancelSelection(pointerEvent: ReactPointerEvent<HTMLDivElement>) {
+    const selection = selectionDragRef.current;
+    if (!selection || selection.pointerId !== pointerEvent.pointerId) return;
+    selectionDragRef.current = null;
+    setSelectionBox(null);
+    setSelectedEventKeys(new Set());
+  }
+
   function startDrag(pointerEvent: ReactPointerEvent<HTMLElement>, event: CalendarEvent, mode: "move" | "resize") {
     if (pointerEvent.button !== 0) return;
     const card = pointerEvent.currentTarget.closest<HTMLElement>(".calendar-event");
     if (!card) return;
+    const originals = mode === "move" && selectedEventKeys.has(event.occurrenceKey) && selectedEventKeys.size > 1
+      ? events.filter((item) => selectedEventKeys.has(item.occurrenceKey))
+      : [event];
+    if (originals.length === 1 && selectedEventKeys.size > 0) setSelectedEventKeys(new Set());
     card.setPointerCapture(pointerEvent.pointerId);
-    dragCardRef.current = card;
     dragRef.current = {
       pointerId: pointerEvent.pointerId,
       eventKey: event.occurrenceKey,
       mode,
       original: event,
       current: event,
+      originals,
+      currentEvents: originals,
       grabOffsetY: mode === "move" ? pointerEvent.clientY - card.getBoundingClientRect().top : 0,
       startClientX: pointerEvent.clientX,
       startClientY: pointerEvent.clientY,
       moved: false
     };
     setActiveEventKey(event.occurrenceKey);
+    setContextMenu(null);
     pointerEvent.preventDefault();
+    pointerEvent.stopPropagation();
   }
 
   function moveDrag(pointerEvent: ReactPointerEvent<HTMLElement>) {
@@ -358,9 +718,8 @@ export function WeekCalendar() {
 
     const rect = timeline.getBoundingClientRect();
     const originalStart = new Date(drag.original.startsAt);
-    const originalEnd = new Date(drag.original.endsAt);
-    const duration = Math.max(SLOT_MINUTES, Math.round((originalEnd.getTime() - originalStart.getTime()) / 60_000));
     let updated: CalendarEvent;
+    let currentEvents: CalendarEvent[];
 
     if (drag.mode === "resize") {
       const startMinutes = minutesOfDay(new Date(drag.current.startsAt));
@@ -370,28 +729,50 @@ export function WeekCalendar() {
         ...drag.current,
         endsAt: localDateAtMinutes(new Date(drag.current.startsAt), endMinutes).toISOString()
       };
+      currentEvents = [updated];
     } else {
       const dayWidth = (rect.width - TIME_GUTTER) / 7;
-      const dayIndex = clamp(Math.floor((pointerEvent.clientX - rect.left - TIME_GUTTER) / dayWidth), 0, 6);
+      const desiredDayIndex = clamp(Math.floor((pointerEvent.clientX - rect.left - TIME_GUTTER) / dayWidth), 0, 6);
+      const originalDayIndexes = drag.originals.map((item) => days.findIndex((day) => dateKey(day) === dateKey(new Date(item.startsAt))));
+      const anchorDayIndex = days.findIndex((day) => dateKey(day) === dateKey(originalStart));
+      const dayDelta = clamp(
+        desiredDayIndex - anchorDayIndex,
+        -Math.min(...originalDayIndexes),
+        6 - Math.max(...originalDayIndexes)
+      );
       const pointerTop = pointerEvent.clientY - rect.top - drag.grabOffsetY;
       const rawStart = snapMinutes(DAY_START + (pointerTop / rect.height) * TOTAL_MINUTES);
-      const startMinutes = clamp(rawStart, DAY_START, DAY_END - duration);
-      const start = localDateAtMinutes(days[dayIndex], startMinutes);
-      updated = {
-        ...drag.current,
-        startsAt: start.toISOString(),
-        endsAt: new Date(start.getTime() + duration * 60_000).toISOString()
-      };
+      const earliestStart = Math.min(...drag.originals.map((item) => minutesOfDay(new Date(item.startsAt))));
+      const latestEnd = Math.max(...drag.originals.map((item) => minutesOfDay(new Date(item.endsAt))));
+      const requestedMinuteDelta = rawStart - minutesOfDay(originalStart);
+      const minuteDelta = clamp(requestedMinuteDelta, DAY_START - earliestStart, DAY_END - latestEnd);
+
+      currentEvents = drag.originals.map((item) => {
+        const itemStart = new Date(item.startsAt);
+        const itemEnd = new Date(item.endsAt);
+        const targetDay = addDays(itemStart, dayDelta);
+        const start = localDateAtMinutes(targetDay, minutesOfDay(itemStart) + minuteDelta);
+        return {
+          ...item,
+          startsAt: start.toISOString(),
+          endsAt: new Date(start.getTime() + itemEnd.getTime() - itemStart.getTime()).toISOString()
+        };
+      });
+      updated = currentEvents.find((item) => item.occurrenceKey === drag.eventKey) ?? drag.current;
     }
 
-    dragRef.current = { ...drag, current: updated, moved: true };
+    dragRef.current = { ...drag, current: updated, currentEvents, moved: true };
     if (dragFrameRef.current === null) {
       dragFrameRef.current = window.requestAnimationFrame(() => {
         dragFrameRef.current = null;
         const liveDrag = dragRef.current;
-        const card = dragCardRef.current;
-        if (!liveDrag || !card) return;
-        applyEventCardLayout(card, liveDrag.current, days);
+        const timeline = timelineRef.current;
+        if (!liveDrag || !timeline) return;
+        const currentByKey = new Map(liveDrag.currentEvents.map((item) => [item.occurrenceKey, item]));
+        timeline.querySelectorAll<HTMLElement>(".calendar-event").forEach((card) => {
+          const current = card.dataset.eventKey ? currentByKey.get(card.dataset.eventKey) : undefined;
+          if (current) applyEventCardLayout(card, current, days);
+        });
       });
     }
   }
@@ -404,12 +785,24 @@ export function WeekCalendar() {
       dragFrameRef.current = null;
     }
     dragRef.current = null;
-    dragCardRef.current = null;
     setActiveEventKey(null);
 
     if (drag.moved) {
-      setEvents((current) => current.map((event) => event.occurrenceKey === drag.eventKey ? drag.current : event));
-      if (!needsRecurrenceScopeChoice(drag.original)) {
+      const currentByKey = new Map(drag.currentEvents.map((item) => [item.occurrenceKey, item]));
+      setEvents((current) => current.map((event) => currentByKey.get(event.occurrenceKey) ?? event));
+      if (drag.originals.length > 1) {
+        for (const original of drag.originals) {
+          const current = currentByKey.get(original.occurrenceKey);
+          if (!current) continue;
+          scheduleEventSave(
+            current,
+            original,
+            original.recurrenceIntervalWeeks !== null ? "occurrence" : "series",
+            false
+          );
+        }
+        setNotice(`${drag.originals.length} events moved`);
+      } else if (!needsRecurrenceScopeChoice(drag.original)) {
         scheduleEventSave(
           drag.current,
           drag.original,
@@ -418,7 +811,7 @@ export function WeekCalendar() {
       } else {
         setPendingScopeChange({ previous: drag.original, updated: drag.current });
       }
-    } else if (drag.mode === "move") {
+    } else if (drag.mode === "move" && drag.originals.length === 1) {
       setEditor({ mode: "edit", event: drag.original });
     }
   }
@@ -430,9 +823,9 @@ export function WeekCalendar() {
       window.cancelAnimationFrame(dragFrameRef.current);
       dragFrameRef.current = null;
     }
-    setEvents((current) => current.map((event) => event.occurrenceKey === drag.original.occurrenceKey ? drag.original : event));
+    const originalsByKey = new Map(drag.originals.map((item) => [item.occurrenceKey, item]));
+    setEvents((current) => current.map((event) => originalsByKey.get(event.occurrenceKey) ?? event));
     dragRef.current = null;
-    dragCardRef.current = null;
     setActiveEventKey(null);
   }
 
@@ -537,7 +930,15 @@ export function WeekCalendar() {
                 })}
               </div>
 
-              <div className="calendar-timeline" ref={timelineRef}>
+              <div
+                className="calendar-timeline"
+                ref={timelineRef}
+                onPointerDown={startSelection}
+                onPointerMove={moveSelection}
+                onPointerUp={endSelection}
+                onPointerCancel={cancelSelection}
+                onContextMenu={openCalendarContextMenu}
+              >
                 <div className="time-axis" aria-hidden="true">
                   {hours.map((minutes) => (
                     <span key={minutes} style={{ top: `${((minutes - DAY_START) / TOTAL_MINUTES) * 100}%` }}>
@@ -552,23 +953,35 @@ export function WeekCalendar() {
                   ))}
                 </div>
 
+                {selectionBox && (
+                  <div
+                    className="selection-box"
+                    style={selectionBox}
+                    aria-hidden="true"
+                  />
+                )}
+
                 <div className="events-layer">
                   {events.map((event) => {
                     const layout = eventCardLayout(event, days);
                     if (!layout) return null;
+                    const isSelected = selectedEventKeys.has(event.occurrenceKey);
 
                     return (
                       <button
                         key={event.occurrenceKey}
                         type="button"
-                        className={`calendar-event event-${event.color}${activeEventKey === event.occurrenceKey ? " is-dragging" : ""}${layout.compact ? " is-compact" : ""}`}
+                        className={`calendar-event event-${event.color}${activeEventKey === event.occurrenceKey ? " is-dragging" : ""}${isSelected ? " is-selected" : ""}${layout.compact ? " is-compact" : ""}`}
+                        data-event-key={event.occurrenceKey}
+                        aria-pressed={isSelected}
                         style={{ top: layout.top, height: layout.height, left: dayColumnLeft(layout.dayIndex) }}
                         onPointerDown={(pointerEvent) => startDrag(pointerEvent, event, "move")}
                         onPointerMove={moveDrag}
                         onPointerUp={endDrag}
                         onPointerCancel={cancelDrag}
+                        onContextMenu={(mouseEvent) => openEventContextMenu(mouseEvent, event)}
                         onKeyDown={(keyboardEvent) => handleEventKey(event, keyboardEvent)}
-                        aria-label={`${event.title}, ${formatEventTime(event)}.${formatRecurrenceForAria(event)} Drag to reschedule, or press Enter to edit.`}
+                        aria-label={`${event.title}, ${formatEventTime(event)}.${formatRecurrenceForAria(event)} Drag to reschedule, press Enter to edit, or right-click to copy.`}
                       >
                         <span className="event-accent" />
                         <span className="event-copy">
@@ -617,6 +1030,66 @@ export function WeekCalendar() {
 
       {notice && <div className="toast" role="status"><Check size={15} /> {notice}</div>}
 
+      {contextMenu && (
+        <div
+          className="calendar-context-menu"
+          role="menu"
+          aria-label={contextMenu.kind === "event"
+            ? "Event actions"
+            : contextMenu.kind === "selection"
+              ? "Selected event actions"
+              : "Calendar actions"}
+          style={{ left: contextMenu.x, top: contextMenu.y }}
+          onContextMenu={(mouseEvent) => mouseEvent.preventDefault()}
+          onClick={(mouseEvent) => mouseEvent.stopPropagation()}
+        >
+          {contextMenu.kind === "event" ? (
+            <>
+              <button type="button" role="menuitem" onClick={() => copyEventOccurrence(contextMenu.event)}>
+                <Copy size={15} />
+                <span>Copy event</span>
+              </button>
+              <button type="button" role="menuitem" onClick={() => editEventFromContextMenu(contextMenu.event)}>
+                <Pencil size={15} />
+                <span>Edit event</span>
+              </button>
+              <button
+                className="is-danger"
+                type="button"
+                role="menuitem"
+                onClick={() => void deleteEventFromContextMenu(contextMenu.event)}
+              >
+                <Trash2 size={15} />
+                <span>Delete event</span>
+              </button>
+            </>
+          ) : contextMenu.kind === "selection" ? (
+            <button
+              className="is-danger"
+              type="button"
+              role="menuitem"
+              onClick={() => requestBulkDelete(contextMenu.events)}
+            >
+              <Trash2 size={15} />
+              <span>Delete {contextMenu.events.length} selected events</span>
+            </button>
+          ) : (
+            <>
+              <button type="button" role="menuitem" onClick={() => addEventFromContextMenu(contextMenu)}>
+                <Plus size={15} />
+                <span>Add event</span>
+              </button>
+              {eventClipboard && (
+                <button type="button" role="menuitem" onClick={() => void pasteEvent(contextMenu)}>
+                  <ClipboardPaste size={15} />
+                  <span>Paste “{eventClipboard.title}”</span>
+                </button>
+              )}
+            </>
+          )}
+        </div>
+      )}
+
       {editor && (
         <EventDialog
           key={editor.mode === "edit" ? editor.event.occurrenceKey : `new-${editor.date}`}
@@ -632,6 +1105,24 @@ export function WeekCalendar() {
           action="update"
           onChoose={applyPendingScopeChange}
           onCancel={cancelPendingScopeChange}
+        />
+      )}
+
+      {contextDelete && (
+        <RecurrenceScopeDialog
+          action="delete"
+          busy={contextDelete.busy}
+          onChoose={(scope) => void confirmContextDelete(scope)}
+          onCancel={() => setContextDelete(null)}
+        />
+      )}
+
+      {bulkDelete && (
+        <BulkDeleteDialog
+          count={bulkDelete.events.length}
+          busy={bulkDelete.busy}
+          onConfirm={() => void confirmBulkDelete()}
+          onCancel={() => setBulkDelete(null)}
         />
       )}
     </main>
@@ -650,7 +1141,9 @@ function EventDialog({
   onDelete: (event: CalendarEvent, scope?: RecurringEventScope) => Promise<void>;
 }) {
   const existing = editor.mode === "edit" ? editor.event : null;
-  const initial = existing ? eventToDraft(existing) : newEventDraft(editor.mode === "create" ? editor.date : dateKey(new Date()));
+  const initial = editor.mode === "edit"
+    ? eventToDraft(editor.event)
+    : newEventDraft(editor.date, editor.startMinutes);
   const [title, setTitle] = useState(initial.title);
   const [description, setDescription] = useState(initial.description);
   const [date, setDate] = useState(initial.date);
@@ -924,6 +1417,34 @@ function EventDialog({
   );
 }
 
+function BulkDeleteDialog({
+  count,
+  busy,
+  onConfirm,
+  onCancel
+}: {
+  count: number;
+  busy: boolean;
+  onConfirm: () => void;
+  onCancel: () => void;
+}) {
+  return (
+    <div className="modal-backdrop" role="presentation">
+      <section className="scope-dialog" role="dialog" aria-modal="true" aria-labelledby="bulk-delete-dialog-title">
+        <p className="eyebrow">Multiple events</p>
+        <h2 id="bulk-delete-dialog-title">Delete {count} selected events?</h2>
+        <p>Standalone events will be removed. For recurring events, only the selected occurrences will be deleted.</p>
+        <div className="scope-actions">
+          <button className="secondary-button" type="button" onClick={onCancel} disabled={busy}>Cancel</button>
+          <button className="scope-delete-button" type="button" onClick={onConfirm} disabled={busy}>
+            {busy ? "Deleting…" : `Delete ${count} events`}
+          </button>
+        </div>
+      </section>
+    </div>
+  );
+}
+
 function RecurrenceScopeDialog({
   action,
   busy = false,
@@ -1071,6 +1592,15 @@ function clamp(value: number, minimum: number, maximum: number) {
   return Math.min(maximum, Math.max(minimum, value));
 }
 
+function contextMenuPosition(clientX: number, clientY: number, menuHeight: number) {
+  const menuWidth = 220;
+  const viewportPadding = 8;
+  return {
+    x: clamp(clientX, viewportPadding, window.innerWidth - menuWidth - viewportPadding),
+    y: clamp(clientY, viewportPadding, window.innerHeight - menuHeight - viewportPadding)
+  };
+}
+
 function formatTimeMinutes(minutes: number) {
   return new Intl.DateTimeFormat("en", { hour: "numeric", minute: minutes % 60 ? "2-digit" : undefined }).format(localDateAtMinutes(new Date(), minutes));
 }
@@ -1105,15 +1635,19 @@ function isDateInWeek(date: Date, days: Date[]) {
   return date >= days[0] && date < addDays(days[6], 1);
 }
 
-function newEventDraft(date: string) {
+function newEventDraft(date: string, requestedStartMinutes?: number) {
   const now = new Date();
-  const rounded = clamp(Math.ceil(minutesOfDay(now) / SLOT_MINUTES) * SLOT_MINUTES, DAY_START, DAY_END - 60);
+  const rounded = requestedStartMinutes ?? clamp(
+    Math.ceil(minutesOfDay(now) / SLOT_MINUTES) * SLOT_MINUTES,
+    DAY_START,
+    DAY_END - 60
+  );
   return {
     title: "",
     description: "",
     date,
     time: minutesToInput(rounded),
-    duration: 60,
+    duration: Math.min(60, DAY_END - rounded),
     recurrenceIntervalWeeks: null,
     recurrenceEndsOn: null,
     color: "violet" as EventColor

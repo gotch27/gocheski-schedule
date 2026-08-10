@@ -499,6 +499,7 @@ button {
   flex: 1;
   min-height: 0;
   position: relative;
+  cursor: crosshair;
 }
 
 .time-axis {
@@ -593,6 +594,28 @@ button {
   transform: scale(1.018);
   box-shadow: 0 14px 28px rgba(0, 0, 0, 0.2);
   opacity: 0.95;
+}
+
+.calendar-event.is-selected {
+  z-index: 9;
+  outline: 1px solid #6373d8;
+  outline-offset: 1px;
+  box-shadow:
+    0 0 0 2px rgba(99, 115, 216, 0.1),
+    0 4px 12px rgba(56, 66, 132, 0.12);
+}
+
+.calendar-event.is-selected.is-dragging {
+  z-index: 15;
+}
+
+.selection-box {
+  position: absolute;
+  z-index: 30;
+  pointer-events: none;
+  border: 1px solid #6373d8;
+  background: rgba(99, 115, 216, 0.1);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.5);
 }
 
 .event-violet {
@@ -799,6 +822,65 @@ button {
   font-size: 11px;
   font-weight: 700;
   box-shadow: 0 15px 40px rgba(0, 0, 0, 0.22);
+}
+
+.calendar-context-menu {
+  position: fixed;
+  z-index: 70;
+  width: 220px;
+  padding: 5px;
+  border: 1px solid #b9bbc1;
+  border-radius: 7px;
+  background: #ffffff;
+  box-shadow: 0 14px 38px rgba(0, 0, 0, 0.2);
+}
+
+.calendar-context-menu button {
+  width: 100%;
+  min-height: 38px;
+  padding: 8px 10px;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  overflow: hidden;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--ink);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 700;
+  text-align: left;
+}
+
+.calendar-context-menu button:hover,
+.calendar-context-menu button:focus-visible {
+  outline: none;
+  background: #f0f0ed;
+}
+
+.calendar-context-menu button:disabled {
+  color: #9699a1;
+  cursor: default;
+}
+
+.calendar-context-menu button:disabled:hover {
+  background: transparent;
+}
+
+.calendar-context-menu button.is-danger {
+  color: #9b3431;
+}
+
+.calendar-context-menu button.is-danger:hover,
+.calendar-context-menu button.is-danger:focus-visible {
+  background: #fff0ef;
+}
+
+.calendar-context-menu button span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .modal-backdrop {
