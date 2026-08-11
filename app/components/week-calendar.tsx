@@ -2,16 +2,19 @@
 
 import {
   Check,
+  CalendarDays,
   ChevronLeft,
   ChevronRight,
   ClipboardPaste,
   Copy,
   GripHorizontal,
+  ListTodo,
   LogOut,
   Moon,
   Pencil,
   Plus,
   Trash2,
+  Undo2,
   X
 } from "lucide-react";
 import {
@@ -24,6 +27,14 @@ import {
   type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent
 } from "react";
+import {
+  TodoBacklog,
+  TodoDialog,
+  TodoScheduleDialog,
+  type CalendarTodo,
+  type TodoEditorState,
+  type TodoInput
+} from "@/app/components/todo-backlog";
 
 type EventColor = "violet" | "blue" | "coral" | "green" | "amber";
 type RecurringEventScope = "series" | "occurrence";
@@ -130,7 +141,14 @@ type SelectionContextMenu = {
   events: CalendarEvent[];
 };
 
-type ContextMenu = CalendarContextMenu | EventContextMenu | SelectionContextMenu;
+type TodoContextMenu = {
+  kind: "todo";
+  x: number;
+  y: number;
+  todo: CalendarTodo;
+};
+
+type ContextMenu = CalendarContextMenu | EventContextMenu | SelectionContextMenu | TodoContextMenu;
 
 type ContextDelete = {
   event: CalendarEvent;
@@ -140,6 +158,29 @@ type ContextDelete = {
 type BulkDelete = {
   events: CalendarEvent[];
   busy: boolean;
+};
+
+type BacklogTodoDragState = {
+  pointerId: number;
+  todo: CalendarTodo;
+};
+
+type BacklogTodoGhost = {
+  todo: CalendarTodo;
+  x: number;
+  y: number;
+  overCalendar: boolean;
+};
+
+type ScheduledTodoDragState = {
+  pointerId: number;
+  mode: "move" | "resize";
+  original: CalendarTodo;
+  current: CalendarTodo;
+  grabOffsetY: number;
+  startClientX: number;
+  startClientY: number;
+  moved: boolean;
 };
 
 type SleepHours = {
@@ -159,6 +200,7 @@ const TOTAL_MINUTES = DAY_END - DAY_START;
 const SLEEP_HOURS_STORAGE_KEY = "gocheski-schedule:sleep-hours";
 const DEFAULT_SLEEP_HOURS: SleepHours = { startMinutes: 23 * 60, endMinutes: 7 * 60 };
 const EVENTS_API_PATH = "/schedule/api/events";
+const TODOS_API_PATH = "/schedule/api/todos";
 const LOGIN_API_PATH = "/schedule/api/auth/login";
 const DAY_NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
 const COLORS: Array<{ value: EventColor; label: string }> = [
@@ -172,10 +214,18 @@ const COLORS: Array<{ value: EventColor; label: string }> = [
 export function WeekCalendar() {
   const [weekStartKey, setWeekStartKey] = useState(() => dateKey(startOfWeek(new Date())));
   const [events, setEvents] = useState<CalendarEvent[]>([]);
+  const [backlogTodos, setBacklogTodos] = useState<CalendarTodo[]>([]);
+  const [scheduledTodos, setScheduledTodos] = useState<CalendarTodo[]>([]);
   const [loading, setLoading] = useState(true);
+  const [todosLoading, setTodosLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [editor, setEditor] = useState<EditorState | null>(null);
+  const [todoEditor, setTodoEditor] = useState<TodoEditorState | null>(null);
+  const [todoScheduleEditor, setTodoScheduleEditor] = useState<CalendarTodo | null>(null);
+  const [backlogOpen, setBacklogOpen] = useState(false);
+  const [backlogTodoGhost, setBacklogTodoGhost] = useState<BacklogTodoGhost | null>(null);
+  const [activeTodoId, setActiveTodoId] = useState<string | null>(null);
   const [activeEventKey, setActiveEventKey] = useState<string | null>(null);
   const [pendingScopeChange, setPendingScopeChange] = useState<PendingScopeChange | null>(null);
   const [eventClipboard, setEventClipboard] = useState<EventClipboard | null>(null);
@@ -193,6 +243,8 @@ export function WeekCalendar() {
   const timelineHeightRef = useRef(0);
   const initialScrollAppliedRef = useRef(false);
   const dragRef = useRef<DragState | null>(null);
+  const backlogTodoDragRef = useRef<BacklogTodoDragState | null>(null);
+  const scheduledTodoDragRef = useRef<ScheduledTodoDragState | null>(null);
   const dragFrameRef = useRef<number | null>(null);
   const selectionDragRef = useRef<SelectionDragState | null>(null);
   const pendingSavesRef = useRef(new Map<string, PendingSave>());
@@ -224,9 +276,32 @@ export function WeekCalendar() {
     }
   }, [weekStartKey]);
 
+  const loadTodos = useCallback(async () => {
+    setTodosLoading(true);
+    const rangeStart = parseDateKey(weekStartKey);
+    const rangeEnd = addDays(rangeStart, 7);
+
+    try {
+      const query = new URLSearchParams({
+        weekStart: rangeStart.toISOString(),
+        weekEnd: rangeEnd.toISOString()
+      });
+      const data = await apiRequest<{ backlog: CalendarTodo[]; scheduled: CalendarTodo[] }>(`${TODOS_API_PATH}?${query}`);
+      setBacklogTodos(data.backlog);
+      setScheduledTodos(data.scheduled);
+    } catch (error) {
+      setBacklogTodos([]);
+      setScheduledTodos([]);
+      setLoadError(readError(error));
+    } finally {
+      setTodosLoading(false);
+    }
+  }, [weekStartKey]);
+
   useEffect(() => {
     void loadEvents();
-  }, [loadEvents]);
+    void loadTodos();
+  }, [loadEvents, loadTodos]);
 
   useEffect(() => {
     setSelectedEventKeys(new Set());
@@ -363,6 +438,250 @@ export function WeekCalendar() {
     setNotice("Sleeping hours updated");
   }
 
+  async function saveTodoFromEditor(input: TodoInput, existing?: CalendarTodo) {
+    if (existing) {
+      const data = await apiRequest<{ todos: CalendarTodo[] }>(TODOS_API_PATH, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ action: "update", id: existing.id, ...input })
+      });
+      const updated = data.todos[0];
+      setBacklogTodos((current) => current.map((todo) => todo.id === updated.id ? updated : todo));
+      setScheduledTodos((current) => current.map((todo) => todo.id === updated.id ? updated : todo));
+      setNotice("To-do updated");
+    } else {
+      const data = await apiRequest<{ todo: CalendarTodo }>(TODOS_API_PATH, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(input)
+      });
+      setBacklogTodos((current) => [...current, data.todo]);
+      setNotice("Added to backlog");
+    }
+    setTodoEditor(null);
+  }
+
+  async function deleteTodo(todo: CalendarTodo) {
+    await apiRequest<{ id: string }>(TODOS_API_PATH, {
+      method: "DELETE",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ id: todo.id })
+    });
+    setBacklogTodos((current) => current.filter((item) => item.id !== todo.id));
+    setScheduledTodos((current) => current.filter((item) => item.id !== todo.id));
+    setTodoEditor(null);
+    setNotice("To-do deleted");
+  }
+
+  async function reorderBacklogTodos(index: number, offset: -1 | 1) {
+    const targetIndex = index + offset;
+    if (targetIndex < 0 || targetIndex >= backlogTodos.length) return;
+    const previous = backlogTodos;
+    const reordered = [...backlogTodos];
+    [reordered[index], reordered[targetIndex]] = [reordered[targetIndex], reordered[index]];
+    setBacklogTodos(reordered);
+    try {
+      const data = await apiRequest<{ todos: CalendarTodo[] }>(TODOS_API_PATH, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ action: "reorder", orderedIds: reordered.map((todo) => todo.id) })
+      });
+      setBacklogTodos(data.todos);
+    } catch (error) {
+      setBacklogTodos(previous);
+      setNotice(readError(error));
+    }
+  }
+
+  async function scheduleTodo(todo: CalendarTodo, scheduledAt: Date) {
+    const data = await apiRequest<{ todos: CalendarTodo[] }>(TODOS_API_PATH, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ action: "schedule", id: todo.id, scheduledAt: scheduledAt.toISOString() })
+    });
+    const updated = data.todos[0];
+    setBacklogTodos((current) => current.filter((item) => item.id !== updated.id));
+    const scheduledWeek = dateKey(startOfWeek(scheduledAt));
+    if (scheduledWeek !== weekStartKey) {
+      setWeekStartKey(scheduledWeek);
+    } else {
+      setScheduledTodos((current) => [...current.filter((item) => item.id !== updated.id), updated].sort(compareTodos));
+    }
+    setNotice("To-do added to calendar");
+  }
+
+  async function returnTodoToBacklog(todo: CalendarTodo) {
+    const data = await apiRequest<{ todos: CalendarTodo[] }>(TODOS_API_PATH, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ action: "unschedule", id: todo.id })
+    });
+    const updated = data.todos[0];
+    setScheduledTodos((current) => current.filter((item) => item.id !== updated.id));
+    setBacklogTodos((current) => [...current.filter((item) => item.id !== updated.id), updated]);
+    setNotice("Returned to backlog");
+  }
+
+  function startBacklogTodoDrag(pointerEvent: ReactPointerEvent<HTMLButtonElement>, todo: CalendarTodo) {
+    if (pointerEvent.button !== 0) return;
+    pointerEvent.currentTarget.setPointerCapture(pointerEvent.pointerId);
+    backlogTodoDragRef.current = { pointerId: pointerEvent.pointerId, todo };
+    setBacklogTodoGhost({ todo, x: pointerEvent.clientX, y: pointerEvent.clientY, overCalendar: false });
+    pointerEvent.preventDefault();
+  }
+
+  function moveBacklogTodoDrag(pointerEvent: ReactPointerEvent<HTMLButtonElement>) {
+    const drag = backlogTodoDragRef.current;
+    const timeline = timelineRef.current;
+    if (!drag || !timeline || drag.pointerId !== pointerEvent.pointerId) return;
+    const rect = timeline.getBoundingClientRect();
+    const overCalendar = pointerEvent.clientX >= rect.left + TIME_GUTTER
+      && pointerEvent.clientX <= rect.right
+      && pointerEvent.clientY >= rect.top
+      && pointerEvent.clientY <= rect.bottom;
+    setBacklogTodoGhost({
+      todo: drag.todo,
+      x: pointerEvent.clientX,
+      y: pointerEvent.clientY,
+      overCalendar
+    });
+  }
+
+  function endBacklogTodoDrag(pointerEvent: ReactPointerEvent<HTMLButtonElement>) {
+    const drag = backlogTodoDragRef.current;
+    const timeline = timelineRef.current;
+    backlogTodoDragRef.current = null;
+    setBacklogTodoGhost(null);
+    if (!drag || !timeline || drag.pointerId !== pointerEvent.pointerId) return;
+
+    const rect = timeline.getBoundingClientRect();
+    const contentX = pointerEvent.clientX - rect.left - TIME_GUTTER;
+    if (
+      contentX < 0
+      || contentX >= rect.width - TIME_GUTTER
+      || pointerEvent.clientY < rect.top
+      || pointerEvent.clientY > rect.bottom
+    ) return;
+
+    const dayWidth = (rect.width - TIME_GUTTER) / 7;
+    const dayIndex = clamp(Math.floor(contentX / dayWidth), 0, 6);
+    const duration = drag.todo.estimatedMinutes ?? 0;
+    const startMinutes = clamp(
+      snapMinutes(DAY_START + ((pointerEvent.clientY - rect.top) / rect.height) * TOTAL_MINUTES),
+      DAY_START,
+      DAY_END - Math.max(SLOT_MINUTES, duration)
+    );
+    void scheduleTodo(drag.todo, localDateAtMinutes(days[dayIndex], startMinutes)).catch((error) => {
+      setNotice(readError(error));
+    });
+  }
+
+  function cancelBacklogTodoDrag() {
+    backlogTodoDragRef.current = null;
+    setBacklogTodoGhost(null);
+  }
+
+  function startScheduledTodoDrag(
+    pointerEvent: ReactPointerEvent<HTMLElement>,
+    todo: CalendarTodo,
+    mode: "move" | "resize" = "move"
+  ) {
+    if (pointerEvent.button !== 0 || !todo.scheduledAt) return;
+    pointerEvent.currentTarget.setPointerCapture(pointerEvent.pointerId);
+    scheduledTodoDragRef.current = {
+      pointerId: pointerEvent.pointerId,
+      mode,
+      original: todo,
+      current: todo,
+      grabOffsetY: mode === "resize" || todo.estimatedMinutes === null
+        ? 0
+        : pointerEvent.clientY - pointerEvent.currentTarget.getBoundingClientRect().top,
+      startClientX: pointerEvent.clientX,
+      startClientY: pointerEvent.clientY,
+      moved: false
+    };
+    setActiveTodoId(todo.id);
+    setContextMenu(null);
+    pointerEvent.preventDefault();
+    pointerEvent.stopPropagation();
+  }
+
+  function moveScheduledTodoDrag(pointerEvent: ReactPointerEvent<HTMLElement>) {
+    const drag = scheduledTodoDragRef.current;
+    const timeline = timelineRef.current;
+    if (!drag || !timeline || drag.pointerId !== pointerEvent.pointerId) return;
+    if (!drag.moved && Math.hypot(pointerEvent.clientX - drag.startClientX, pointerEvent.clientY - drag.startClientY) < 3) return;
+
+    const rect = timeline.getBoundingClientRect();
+    if (drag.mode === "resize" && drag.current.scheduledAt) {
+      const startMinutes = minutesOfDay(new Date(drag.current.scheduledAt));
+      const pointerMinutes = snapMinutes(DAY_START + ((pointerEvent.clientY - rect.top) / rect.height) * TOTAL_MINUTES);
+      const estimatedMinutes = clamp(pointerMinutes - startMinutes, SLOT_MINUTES, DAY_END - startMinutes);
+      const current = { ...drag.current, estimatedMinutes };
+      scheduledTodoDragRef.current = { ...drag, current, moved: true };
+      setScheduledTodos((todos) => todos.map((todo) => todo.id === current.id ? current : todo));
+      pointerEvent.preventDefault();
+      pointerEvent.stopPropagation();
+      return;
+    }
+
+    const dayWidth = (rect.width - TIME_GUTTER) / 7;
+    const dayIndex = clamp(
+      Math.floor((pointerEvent.clientX - rect.left - TIME_GUTTER) / dayWidth),
+      0,
+      6
+    );
+    const pointerTop = pointerEvent.clientY - rect.top - drag.grabOffsetY;
+    const duration = drag.current.estimatedMinutes ?? 0;
+    const startMinutes = clamp(
+      snapMinutes(DAY_START + (pointerTop / rect.height) * TOTAL_MINUTES),
+      DAY_START,
+      DAY_END - Math.max(SLOT_MINUTES, duration)
+    );
+    const current = {
+      ...drag.current,
+      scheduledAt: localDateAtMinutes(days[dayIndex], startMinutes).toISOString()
+    };
+    scheduledTodoDragRef.current = { ...drag, current, moved: true };
+    setScheduledTodos((todos) => todos.map((todo) => todo.id === current.id ? current : todo));
+    pointerEvent.preventDefault();
+    pointerEvent.stopPropagation();
+  }
+
+  function endScheduledTodoDrag(pointerEvent: ReactPointerEvent<HTMLElement>) {
+    const drag = scheduledTodoDragRef.current;
+    if (!drag || drag.pointerId !== pointerEvent.pointerId) return;
+    scheduledTodoDragRef.current = null;
+    setActiveTodoId(null);
+    pointerEvent.stopPropagation();
+
+    if (!drag.moved || !drag.current.scheduledAt) {
+      if (drag.mode === "move") setTodoEditor({ mode: "edit", todo: drag.original });
+      return;
+    }
+
+    const persist = drag.mode === "resize"
+      ? saveTodoFromEditor({
+          title: drag.current.title,
+          description: drag.current.description,
+          estimatedMinutes: drag.current.estimatedMinutes
+        }, drag.current)
+      : scheduleTodo(drag.current, new Date(drag.current.scheduledAt));
+    void persist.catch((error) => {
+      setScheduledTodos((todos) => todos.map((todo) => todo.id === drag.original.id ? drag.original : todo));
+      setNotice(readError(error));
+    });
+  }
+
+  function cancelScheduledTodoDrag(pointerEvent: ReactPointerEvent<HTMLElement>) {
+    const drag = scheduledTodoDragRef.current;
+    if (!drag || drag.pointerId !== pointerEvent.pointerId) return;
+    scheduledTodoDragRef.current = null;
+    setActiveTodoId(null);
+    setScheduledTodos((todos) => todos.map((todo) => todo.id === drag.original.id ? drag.original : todo));
+    pointerEvent.stopPropagation();
+  }
+
   function openCreate(
     date = dateKey(isDateInWeek(new Date(), days) ? new Date() : days[0]),
     startMinutes?: number
@@ -427,6 +746,17 @@ export function WeekCalendar() {
       kind: "event",
       ...contextMenuPosition(mouseEvent.clientX, mouseEvent.clientY, 126),
       event
+    });
+  }
+
+  function openTodoContextMenu(mouseEvent: ReactMouseEvent, todo: CalendarTodo) {
+    mouseEvent.preventDefault();
+    mouseEvent.stopPropagation();
+    setSelectedEventKeys(new Set());
+    setContextMenu({
+      kind: "todo",
+      ...contextMenuPosition(mouseEvent.clientX, mouseEvent.clientY, 126),
+      todo
     });
   }
 
@@ -945,7 +1275,9 @@ export function WeekCalendar() {
             <span className="week-range-compact" aria-hidden="true">{formatCompactWeekRange(weekStart, days[6])}</span>
           </h1>
           <div className="calendar-actions">
-            <button className="today-button" type="button" onClick={goToToday}>Today</button>
+            <button className="today-button" type="button" aria-label="Go to today" onClick={goToToday}>
+              <CalendarDays size={14} /> <span>Today</span>
+            </button>
             <div className="week-arrows" aria-label="Week navigation">
               <button type="button" aria-label="Previous week" onClick={() => changeWeek(-1)}><ChevronLeft size={18} /></button>
               <button type="button" aria-label="Next week" onClick={() => changeWeek(1)}><ChevronRight size={18} /></button>
@@ -954,6 +1286,17 @@ export function WeekCalendar() {
         </div>
 
         <div className="topbar-utilities">
+          <button
+            className={`toolbar-icon-button backlog-toggle${backlogOpen ? " is-active" : ""}`}
+            type="button"
+            aria-label="Open to-do backlog"
+            aria-pressed={backlogOpen}
+            title="To-do backlog"
+            onClick={() => setBacklogOpen((current) => !current)}
+          >
+            <ListTodo size={16} />
+            {backlogTodos.length > 0 && <span>{backlogTodos.length > 99 ? "99+" : backlogTodos.length}</span>}
+          </button>
           <button
             className={`toolbar-icon-button${sleepHours ? " is-active" : ""}`}
             type="button"
@@ -1090,6 +1433,62 @@ export function WeekCalendar() {
                       </button>
                     );
                   })}
+
+                  {scheduledTodos.map((todo) => {
+                    const layout = todoCalendarLayout(todo, days);
+                    if (!layout) return null;
+                    const isDragging = activeTodoId === todo.id;
+
+                    if (todo.estimatedMinutes === null) {
+                      return (
+                        <button
+                          className={`calendar-todo-quick${isDragging ? " is-dragging" : ""}`}
+                          type="button"
+                          key={todo.id}
+                          style={{ top: layout.top, left: dayColumnLeft(layout.dayIndex) }}
+                          onPointerDown={(event) => startScheduledTodoDrag(event, todo)}
+                          onPointerMove={moveScheduledTodoDrag}
+                          onPointerUp={endScheduledTodoDrag}
+                          onPointerCancel={cancelScheduledTodoDrag}
+                          onContextMenu={(event) => openTodoContextMenu(event, todo)}
+                          aria-label={`${todo.title}, quick to-do at ${formatTodoTime(todo)}. Drag to reschedule or right-click for actions.`}
+                        >
+                          <ListTodo size={12} />
+                          <strong>{todo.title}</strong>
+                          <span>{formatTodoTime(todo)}</span>
+                        </button>
+                      );
+                    }
+
+                    return (
+                      <button
+                        className={`calendar-event calendar-todo-timed${isDragging ? " is-dragging" : ""}${layout.compact ? " is-compact" : ""}`}
+                        type="button"
+                        key={todo.id}
+                        style={{ top: layout.top, height: layout.height, left: dayColumnLeft(layout.dayIndex) }}
+                        onPointerDown={(event) => startScheduledTodoDrag(event, todo)}
+                        onPointerMove={moveScheduledTodoDrag}
+                        onPointerUp={endScheduledTodoDrag}
+                        onPointerCancel={cancelScheduledTodoDrag}
+                        onContextMenu={(event) => openTodoContextMenu(event, todo)}
+                        aria-label={`${todo.title}, timed to-do ${formatTodoTime(todo)}. Drag to reschedule or right-click for actions.`}
+                      >
+                        <span className="event-accent" />
+                        <span className="event-copy">
+                          <strong>{todo.title}</strong>
+                          <span>{formatTodoTime(todo)}</span>
+                        </span>
+                        <span
+                          className="event-resize"
+                          role="presentation"
+                          onPointerDown={(event) => {
+                            event.stopPropagation();
+                            startScheduledTodoDrag(event, todo, "resize");
+                          }}
+                        ><GripHorizontal size={14} /></span>
+                      </button>
+                    );
+                  })}
                 </div>
 
                 {showCurrentTime && (
@@ -1104,7 +1503,7 @@ export function WeekCalendar() {
                   ><span /></div>
                 )}
 
-                {!loading && !loadError && events.length === 0 && (
+                {!loading && !todosLoading && !loadError && events.length === 0 && scheduledTodos.length === 0 && (
                   <button className="empty-calendar-hint" type="button" onClick={() => openCreate()}>
                     <span><Plus size={18} /></span>
                     <strong>Shape your first block</strong>
@@ -1112,12 +1511,37 @@ export function WeekCalendar() {
                   </button>
                 )}
 
-                {loading && <div className="calendar-loading"><span /> Loading your week</div>}
+                {(loading || todosLoading) && <div className="calendar-loading"><span /> Loading your week</div>}
               </div>
             </div>
           </div>
         </div>
       </section>
+
+      <TodoBacklog
+        open={backlogOpen}
+        todos={backlogTodos}
+        onClose={() => setBacklogOpen(false)}
+        onCreate={() => setTodoEditor({ mode: "create" })}
+        onEdit={(todo) => setTodoEditor({ mode: "edit", todo })}
+        onSchedule={setTodoScheduleEditor}
+        onMove={(index, offset) => void reorderBacklogTodos(index, offset)}
+        onStartDrag={startBacklogTodoDrag}
+        onDragMove={moveBacklogTodoDrag}
+        onDragEnd={endBacklogTodoDrag}
+        onDragCancel={cancelBacklogTodoDrag}
+      />
+
+      {backlogTodoGhost && (
+        <div
+          className={`todo-drag-ghost${backlogTodoGhost.overCalendar ? " is-over-calendar" : ""}`}
+          style={{ left: backlogTodoGhost.x, top: backlogTodoGhost.y }}
+          aria-hidden="true"
+        >
+          <ListTodo size={15} />
+          <span>{backlogTodoGhost.todo.title}</span>
+        </div>
+      )}
 
       {notice && <div className="toast" role="status"><Check size={15} /> {notice}</div>}
 
@@ -1127,6 +1551,8 @@ export function WeekCalendar() {
           role="menu"
           aria-label={contextMenu.kind === "event"
             ? "Event actions"
+            : contextMenu.kind === "todo"
+              ? "To-do actions"
             : contextMenu.kind === "selection"
               ? "Selected event actions"
               : "Calendar actions"}
@@ -1134,7 +1560,33 @@ export function WeekCalendar() {
           onContextMenu={(mouseEvent) => mouseEvent.preventDefault()}
           onClick={(mouseEvent) => mouseEvent.stopPropagation()}
         >
-          {contextMenu.kind === "event" ? (
+          {contextMenu.kind === "todo" ? (
+            <>
+              <button type="button" role="menuitem" onClick={() => {
+                setTodoEditor({ mode: "edit", todo: contextMenu.todo });
+                setContextMenu(null);
+              }}>
+                <Pencil size={15} />
+                <span>Edit to-do</span>
+              </button>
+              <button type="button" role="menuitem" onClick={() => {
+                const todo = contextMenu.todo;
+                setContextMenu(null);
+                void returnTodoToBacklog(todo).catch((error) => setNotice(readError(error)));
+              }}>
+                <Undo2 size={15} />
+                <span>Return to backlog</span>
+              </button>
+              <button className="is-danger" type="button" role="menuitem" onClick={() => {
+                const todo = contextMenu.todo;
+                setContextMenu(null);
+                void deleteTodo(todo).catch((error) => setNotice(readError(error)));
+              }}>
+                <Trash2 size={15} />
+                <span>Delete to-do</span>
+              </button>
+            </>
+          ) : contextMenu.kind === "event" ? (
             <>
               <button type="button" role="menuitem" onClick={() => copyEventOccurrence(contextMenu.event)}>
                 <Copy size={15} />
@@ -1188,6 +1640,34 @@ export function WeekCalendar() {
           onClose={() => setEditor(null)}
           onSave={saveFromEditor}
           onDelete={deleteFromEditor}
+        />
+      )}
+
+      {todoEditor && (
+        <TodoDialog
+          key={todoEditor.mode === "edit" ? todoEditor.todo.id : "new-todo"}
+          editor={todoEditor}
+          onClose={() => setTodoEditor(null)}
+          onSave={saveTodoFromEditor}
+          onDelete={deleteTodo}
+        />
+      )}
+
+      {todoScheduleEditor && (
+        <TodoScheduleDialog
+          key={todoScheduleEditor.id}
+          todo={todoScheduleEditor}
+          initialDate={dateKey(isDateInWeek(new Date(), days) ? new Date() : days[0])}
+          initialTime={minutesToInput(clamp(
+            Math.ceil(minutesOfDay(new Date()) / SLOT_MINUTES) * SLOT_MINUTES,
+            DAY_START,
+            DAY_END - Math.max(SLOT_MINUTES, todoScheduleEditor.estimatedMinutes ?? 0)
+          ))}
+          onClose={() => setTodoScheduleEditor(null)}
+          onSchedule={async (scheduledAt) => {
+            await scheduleTodo(todoScheduleEditor, scheduledAt);
+            setTodoScheduleEditor(null);
+          }}
         />
       )}
 
@@ -1694,6 +2174,21 @@ function eventCardLayout(event: CalendarEvent, days: Date[]) {
   return { dayIndex, top, height, compact: visibleMinutes < 45 };
 }
 
+function todoCalendarLayout(todo: CalendarTodo, days: Date[]) {
+  if (!todo.scheduledAt) return null;
+  const start = new Date(todo.scheduledAt);
+  const dayIndex = days.findIndex((day) => dateKey(day) === dateKey(start));
+  if (dayIndex < 0) return null;
+  const startMinutes = minutesOfDay(start);
+  const visibleMinutes = Math.min(todo.estimatedMinutes ?? 0, DAY_END - startMinutes);
+  return {
+    dayIndex,
+    top: `${((startMinutes - DAY_START) / TOTAL_MINUTES) * 100}%`,
+    height: `${(visibleMinutes / TOTAL_MINUTES) * 100}%`,
+    compact: visibleMinutes < 45
+  };
+}
+
 function dayColumnLeft(dayIndex: number) {
   return `calc((100% / 7) * ${dayIndex} + 5px)`;
 }
@@ -1799,6 +2294,14 @@ function formatEventTime(event: CalendarEvent) {
   return `${formatter.format(new Date(event.startsAt))} – ${formatter.format(new Date(event.endsAt))}`;
 }
 
+function formatTodoTime(todo: CalendarTodo) {
+  if (!todo.scheduledAt) return "Unscheduled";
+  const formatter = new Intl.DateTimeFormat("en", { hour: "numeric", minute: "2-digit" });
+  const start = new Date(todo.scheduledAt);
+  if (todo.estimatedMinutes === null) return formatter.format(start);
+  return `${formatter.format(start)} – ${formatter.format(new Date(start.getTime() + todo.estimatedMinutes * 60_000))}`;
+}
+
 function formatRecurrenceForAria(event: CalendarEvent) {
   if (event.recurrenceIntervalWeeks === null) return "";
   const frequency = event.recurrenceIntervalWeeks === 1
@@ -1885,6 +2388,10 @@ function defaultRecurrenceEnd(date: string) {
 
 function compareEvents(left: CalendarEvent, right: CalendarEvent) {
   return new Date(left.startsAt).getTime() - new Date(right.startsAt).getTime();
+}
+
+function compareTodos(left: CalendarTodo, right: CalendarTodo) {
+  return new Date(left.scheduledAt ?? 0).getTime() - new Date(right.scheduledAt ?? 0).getTime();
 }
 
 function readError(error: unknown) {

@@ -158,6 +158,28 @@ button {
   background: #eeeeeb;
 }
 
+.backlog-toggle {
+  position: relative;
+}
+
+.backlog-toggle > span {
+  position: absolute;
+  min-width: 15px;
+  height: 15px;
+  top: -5px;
+  right: -5px;
+  display: grid;
+  place-items: center;
+  padding: 0 3px;
+  border: 2px solid #ffffff;
+  border-radius: 99px;
+  background: #000000;
+  color: #ffffff;
+  font-size: 8px;
+  font-weight: 800;
+  line-height: 1;
+}
+
 .logout-button:hover {
   border-color: #000000;
   color: #000000;
@@ -333,6 +355,10 @@ button {
   padding: 0 12px;
   border-radius: 7px;
   font-size: 11px;
+}
+
+.calendar-actions .today-button svg {
+  display: none;
 }
 
 .today-button,
@@ -673,6 +699,65 @@ button {
   z-index: 15;
 }
 
+.calendar-todo-timed {
+  color: #385328;
+  border-color: #c8d9b8;
+  background: linear-gradient(145deg, #eef6e8, #e2efd8);
+}
+
+.events-layer .calendar-todo-quick {
+  position: absolute;
+  z-index: 6;
+  right: auto;
+  width: calc((100% / 7) - 10px);
+  height: 22px;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0 7px;
+  transform: translateY(-50%);
+  overflow: hidden;
+  border: 1px solid #c7cfbb;
+  border-left: 3px solid #536b3d;
+  border-radius: 5px;
+  background: rgba(247, 250, 243, 0.98);
+  color: #35472a;
+  box-shadow: 0 2px 7px rgba(35, 52, 24, 0.1);
+  cursor: grab;
+  pointer-events: auto;
+  touch-action: none;
+  user-select: none;
+}
+
+.calendar-todo-quick strong {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 10px;
+}
+
+.calendar-todo-quick span {
+  flex: none;
+  font-size: 8px;
+  opacity: 0.7;
+}
+
+.calendar-todo-quick:hover,
+.calendar-todo-quick:focus-visible {
+  z-index: 9;
+  outline: none;
+  border-color: #536b3d;
+  box-shadow: 0 6px 14px rgba(35, 52, 24, 0.16);
+}
+
+.calendar-todo-quick.is-dragging {
+  z-index: 15;
+  cursor: grabbing;
+  box-shadow: 0 10px 20px rgba(35, 52, 24, 0.2);
+}
+
 .selection-box {
   position: absolute;
   z-index: 30;
@@ -864,6 +949,231 @@ button {
   animation: pulse 1s ease-in-out infinite;
 }
 
+.todo-backlog {
+  position: fixed;
+  z-index: 40;
+  width: min(370px, calc(100vw - 20px));
+  top: 46px;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 20px;
+  border-left: 1px solid #bfc1c5;
+  background: rgba(250, 250, 248, 0.98);
+  box-shadow: -18px 0 44px rgba(0, 0, 0, 0.14);
+  backdrop-filter: blur(14px);
+}
+
+.todo-backlog-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.todo-backlog-header > div > span {
+  color: #747b87;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+}
+
+.todo-backlog-header h2 {
+  margin: 3px 0 0;
+  font-size: 25px;
+  letter-spacing: -0.04em;
+}
+
+.todo-backlog-header h2 small {
+  display: inline-grid;
+  min-width: 22px;
+  height: 22px;
+  place-items: center;
+  margin-left: 5px;
+  border-radius: 99px;
+  background: #e4e4df;
+  font-size: 10px;
+  vertical-align: 4px;
+}
+
+.todo-add-button {
+  min-height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  border: 1px solid #000000;
+  border-radius: 7px;
+  background: #000000;
+  color: #ffffff;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.todo-backlog-list {
+  min-height: 0;
+  margin: 14px -4px 0;
+  padding: 0 4px 12px;
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 7px;
+  overflow-y: auto;
+}
+
+.todo-backlog-item {
+  min-height: 58px;
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 5px;
+  padding: 7px;
+  border: 1px solid #d5d5d0;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.todo-drag-handle,
+.todo-backlog-actions button {
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: #747b87;
+  cursor: pointer;
+}
+
+.todo-drag-handle {
+  width: 28px;
+  height: 40px;
+  cursor: grab;
+  touch-action: none;
+}
+
+.todo-drag-handle:active {
+  cursor: grabbing;
+}
+
+.todo-drag-handle:hover,
+.todo-backlog-actions button:hover:not(:disabled) {
+  background: #f0f0ec;
+  color: #000000;
+}
+
+.todo-backlog-copy {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  padding: 4px;
+  border: 0;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+
+.todo-backlog-copy strong {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+}
+
+.todo-backlog-copy span {
+  color: #727986;
+  font-size: 9px;
+  font-weight: 650;
+}
+
+.todo-backlog-actions {
+  display: grid;
+  grid-template-columns: 24px 24px;
+  gap: 2px;
+}
+
+.todo-backlog-actions button {
+  width: 24px;
+  height: 22px;
+}
+
+.todo-backlog-actions button:disabled {
+  opacity: 0.22;
+  cursor: default;
+}
+
+.todo-backlog-empty {
+  flex: 1;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 8px;
+  padding: 30px;
+  color: #6d7480;
+  text-align: center;
+}
+
+.todo-backlog-empty strong {
+  color: #222222;
+  font-size: 14px;
+}
+
+.todo-backlog-empty p {
+  max-width: 230px;
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.todo-backlog-tip {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  margin: 8px 0 0;
+  color: #747b87;
+  font-size: 9px;
+}
+
+.todo-drag-ghost {
+  position: fixed;
+  z-index: 80;
+  max-width: 250px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 10px;
+  transform: translate(10px, 10px);
+  overflow: hidden;
+  border: 1px solid #aeb3a5;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.96);
+  color: #3c4734;
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.18);
+  pointer-events: none;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.todo-drag-ghost.is-over-calendar {
+  border-color: #4f673a;
+  background: #edf4e7;
+}
+
+.todo-drag-ghost span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 @keyframes pulse {
   50% { opacity: 0.3; transform: scale(0.78); }
 }
@@ -1020,6 +1330,94 @@ button {
 
 .sleep-dialog .form-error {
   margin: 12px 0 0;
+}
+
+.todo-dialog {
+  width: min(500px, 100%);
+}
+
+.todo-dialog .dialog-header {
+  margin-bottom: 18px;
+}
+
+.todo-dialog .dialog-header p,
+.todo-schedule-dialog .dialog-header p {
+  margin: 5px 0 0;
+  color: #59606f;
+  font-size: 12px;
+}
+
+.todo-schedule-dialog {
+  width: min(430px, 100%);
+}
+
+.todo-kind-field {
+  margin: 0 0 17px;
+  padding: 0;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  border: 0;
+}
+
+.todo-kind-field legend {
+  margin-bottom: 7px;
+  color: #384055;
+  font-size: 10px;
+  font-weight: 800;
+}
+
+.todo-kind-field > button {
+  min-height: 58px;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 9px 11px;
+  border: 1px solid #c8cbd2;
+  border-radius: 7px;
+  background: #ffffff;
+  color: #606775;
+  cursor: pointer;
+  text-align: left;
+}
+
+.todo-kind-field > button.is-selected {
+  border-color: #000000;
+  background: #f3f3f0;
+  color: #000000;
+  box-shadow: inset 0 0 0 1px #000000;
+}
+
+.todo-kind-field > button span {
+  display: grid;
+  gap: 2px;
+}
+
+.todo-kind-field > button strong {
+  font-size: 12px;
+}
+
+.todo-kind-field > button small {
+  color: #777e8b;
+  font-size: 9px;
+}
+
+.todo-duration-field {
+  max-width: 270px;
+}
+
+.todo-dialog-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding-top: 17px;
+  border-top: 1px solid #d4d7dd;
+}
+
+.todo-dialog-actions > div {
+  display: flex;
+  gap: 8px;
 }
 
 .scope-actions {
@@ -1400,7 +1798,7 @@ button {
   }
 
   .calendar-toolbar h1 {
-    width: 90px;
+    width: 82px;
     font-size: 13px;
   }
 
@@ -1417,7 +1815,16 @@ button {
   }
 
   .calendar-actions .today-button {
-    padding: 0 6px;
+    width: var(--toolbar-control-height);
+    padding: 0;
+  }
+
+  .calendar-actions .today-button svg {
+    display: block;
+  }
+
+  .calendar-actions .today-button span {
+    display: none;
   }
 
   .week-arrows button {
@@ -1429,8 +1836,9 @@ button {
   }
 
   .topbar-utilities {
-    flex: 0 0 var(--toolbar-control-height);
-    min-width: var(--toolbar-control-height);
+    flex: 0 0 calc(var(--toolbar-control-height) * 2 + 3px);
+    min-width: calc(var(--toolbar-control-height) * 2 + 3px);
+    gap: 3px;
   }
 
   .connection-banner {
@@ -1472,6 +1880,32 @@ button {
   .scope-actions {
     align-items: stretch;
     flex-direction: column-reverse;
+  }
+
+  .todo-backlog {
+    width: 100%;
+    top: 44px;
+    padding: 18px 16px;
+    border-left: 0;
+  }
+
+  .todo-dialog {
+    max-height: calc(100vh - 48px);
+    overflow: auto;
+    padding: 20px;
+  }
+
+  .todo-dialog-actions {
+    align-items: stretch;
+    flex-direction: column-reverse;
+  }
+
+  .todo-dialog-actions > div {
+    display: grid;
+  }
+
+  .todo-dialog-actions button {
+    width: 100%;
   }
 
   .dialog-actions {

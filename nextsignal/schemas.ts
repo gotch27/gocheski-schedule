@@ -101,9 +101,49 @@ export const deleteEventInputSchema = z.object({
   scope: recurringEventScopeSchema.default("series")
 });
 
+const todoFields = {
+  title: z.string().trim().min(1, "Give the to-do a title.").max(120),
+  description: z.string().trim().max(500).default(""),
+  estimatedMinutes: z.number().int().min(15).max(15 * 60).nullable().default(null)
+};
+
+export const listTodosInputSchema = z.object({
+  weekStart: z.iso.datetime({ offset: true }),
+  weekEnd: z.iso.datetime({ offset: true })
+});
+
+export const createTodoInputSchema = z.object(todoFields);
+
+export const updateTodoInputSchema = z.discriminatedUnion("action", [
+  z.object({
+    action: z.literal("update"),
+    id: z.uuid(),
+    ...todoFields
+  }),
+  z.object({
+    action: z.literal("schedule"),
+    id: z.uuid(),
+    scheduledAt: z.iso.datetime({ offset: true })
+  }),
+  z.object({
+    action: z.literal("unschedule"),
+    id: z.uuid()
+  }),
+  z.object({
+    action: z.literal("reorder"),
+    orderedIds: z.array(z.uuid()).max(500)
+  })
+]);
+
+export const deleteTodoInputSchema = z.object({ id: z.uuid() });
+
 export type EventColor = z.infer<typeof eventColorSchema>;
 export type RecurringEventScope = z.infer<typeof recurringEventScopeSchema>;
 export type ListEventsInput = z.infer<typeof listEventsInputSchema>;
 export type CreateEventInput = z.infer<typeof createEventInputSchema>;
 export type UpdateEventInput = z.infer<typeof updateEventInputSchema>;
 export type DeleteEventInput = z.infer<typeof deleteEventInputSchema>;
+export type ListTodosInput = z.infer<typeof listTodosInputSchema>;
+export type CreateTodoInput = z.infer<typeof createTodoInputSchema>;
+export type UpdateTodoInput = z.infer<typeof updateTodoInputSchema>;
+export type DeleteTodoInput = z.infer<typeof deleteTodoInputSchema>;

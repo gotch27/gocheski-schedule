@@ -66,3 +66,28 @@ export const calendarEventExceptions = pgTable(
 );
 
 export type CalendarEventExceptionRecord = typeof calendarEventExceptions.$inferSelect;
+
+export const calendarTodos = pgTable(
+  "calendar_todos",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    title: text("title").notNull(),
+    description: text("description").notNull().default(""),
+    estimatedMinutes: integer("estimated_minutes"),
+    scheduledAt: timestamp("scheduled_at", { withTimezone: true, mode: "date" }),
+    sortOrder: integer("sort_order").notNull().default(0),
+    createdAt: timestamp("created_at", { withTimezone: true, mode: "date" }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true, mode: "date" }).notNull().defaultNow()
+  },
+  (todo) => [
+    index("calendar_todos_scheduled_at_idx").on(todo.scheduledAt),
+    index("calendar_todos_sort_order_idx").on(todo.sortOrder),
+    check(
+      "calendar_todos_valid_estimate",
+      sql`${todo.estimatedMinutes} is null or ${todo.estimatedMinutes} between 15 and 900`
+    ),
+    check("calendar_todos_valid_sort_order", sql`${todo.sortOrder} >= 0`)
+  ]
+);
+
+export type CalendarTodoRecord = typeof calendarTodos.$inferSelect;

@@ -1,14 +1,22 @@
 import { neon } from "@neondatabase/serverless";
-import { and, asc, eq, gt, inArray, isNotNull, isNull, lt, or } from "drizzle-orm";
+import { and, asc, desc, eq, gt, gte, inArray, isNotNull, isNull, lt, or } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/neon-http";
 import {
   calendarEventExceptions,
   calendarEvents,
+  calendarTodos,
   type CalendarEventExceptionRecord,
   type CalendarEventRecord,
+  type CalendarTodoRecord,
   type EventColor
 } from "@/db/schema";
-import type { CreateEventInput, DeleteEventInput, UpdateEventInput } from "@/nextsignal/schemas";
+import type {
+  CreateEventInput,
+  CreateTodoInput,
+  DeleteEventInput,
+  UpdateEventInput,
+  UpdateTodoInput
+} from "@/nextsignal/schemas";
 
 export type CalendarEvent = {
   id: string;
@@ -26,6 +34,22 @@ export type CalendarEvent = {
   color: EventColor;
   createdAt: string;
   updatedAt: string;
+};
+
+export type CalendarTodo = {
+  id: string;
+  title: string;
+  description: string;
+  estimatedMinutes: number | null;
+  scheduledAt: string | null;
+  sortOrder: number;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type CalendarTodoList = {
+  backlog: CalendarTodo[];
+  scheduled: CalendarTodo[];
 };
 
 const databases = new Map<string, ReturnType<typeof createDatabase>>();
@@ -65,6 +89,25 @@ function toCalendarEvent(
     createdAt: record.createdAt.toISOString(),
     updatedAt: record.updatedAt.toISOString()
   };
+}
+
+function toCalendarTodo(record: CalendarTodoRecord): CalendarTodo {
+  return {
+    ...record,
+    scheduledAt: record.scheduledAt?.toISOString() ?? null,
+    createdAt: record.createdAt.toISOString(),
+    updatedAt: record.updatedAt.toISOString()
+  };
+}
+
+async function nextTodoSortOrder(db: ReturnType<typeof database>) {
+  const [lastTodo] = await db
+    .select({ sortOrder: calendarTodos.sortOrder })
+    .from(calendarTodos)
+    .where(isNull(calendarTodos.scheduledAt))
+    .orderBy(desc(calendarTodos.sortOrder))
+    .limit(1);
+  return (lastTodo?.sortOrder ?? -1) + 1;
 }
 
 export const services = {
@@ -288,6 +331,97 @@ export const services = {
         .where(eq(calendarEvents.id, input.id))
         .returning({ id: calendarEvents.id });
 
+      return deleted.length > 0;
+    }
+  },
+
+  todos: {
+    async list(connectionString: string, weekStart: string, weekEnd: string): Promise<CalendarTodoList> {
+      const db = database(connectionString);
+      const rangeStart = new Date(weekStart);
+      const rangeEnd = new Date(weekEnd);
+      const [backlogRecords, scheduledRecords] = await Promise.all([
+        db
+          .select()
+          .from(calendarTodos)
+          .where(isNull(calendarTodos.scheduledAt))
+          .orderBy(asc(calendarTodos.sortOrder), asc(calendarTodos.createdAt)),
+        db
+          .select()
+          .from(calendarTodos)
+          .where(and(
+            isNotNull(calendarTodos.scheduledAt),
+            gte(calendarTodos.scheduledAt, rangeStart),
+            lt(calendarTodos.scheduledAt, rangeEnd)
+          ))
+          .orderBy(asc(calendarTodos.scheduledAt))
+      ]);
+      return {
+        backlog: backlogRecords.map(toCalendarTodo),
+        scheduled: scheduledRecords.map(toCalendarTodo)
+      };
+    },
+
+    async create(connectionString: string, input: CreateTodoInput): Promise<CalendarTodo> {
+      const db = database(connectionString);
+      const [record] = await db
+        .insert(calendarTodos)
+        .values({
+          title: input.title,
+          description: input.description,
+          estimatedMinutes: input.estimatedMinutes,
+          sortOrder: await nextTodoSortOrder(db)
+        })
+        .returning();
+      return toCalendarTodo(record);
+    },
+
+    async update(connectionString: string, input: UpdateTodoInput): Promise<CalendarTodo[] | null> {
+      const db = database(connectionString);
+
+      if (input.action === "reorder") {
+        const existing = await db
+          .select({ id: calendarTodos.id })
+          .from(calendarTodos)
+          .where(and(isNull(calendarTodos.scheduledAt), inArray(calendarTodos.id, input.orderedIds)));
+        if (existing.length !== input.orderedIds.length) return null;
+        for (const [sortOrder, id] of input.orderedIds.entries()) {
+          await db
+            .update(calendarTodos)
+            .set({ sortOrder, updatedAt: new Date() })
+            .where(and(eq(calendarTodos.id, id), isNull(calendarTodos.scheduledAt)));
+        }
+        const reordered = await db
+          .select()
+          .from(calendarTodos)
+          .where(isNull(calendarTodos.scheduledAt))
+          .orderBy(asc(calendarTodos.sortOrder), asc(calendarTodos.createdAt));
+        return reordered.map(toCalendarTodo);
+      }
+
+      const values = input.action === "update"
+        ? {
+            title: input.title,
+            description: input.description,
+            estimatedMinutes: input.estimatedMinutes,
+            updatedAt: new Date()
+          }
+        : input.action === "schedule"
+          ? { scheduledAt: new Date(input.scheduledAt), updatedAt: new Date() }
+          : { scheduledAt: null, sortOrder: await nextTodoSortOrder(db), updatedAt: new Date() };
+      const [record] = await db
+        .update(calendarTodos)
+        .set(values)
+        .where(eq(calendarTodos.id, input.id))
+        .returning();
+      return record ? [toCalendarTodo(record)] : null;
+    },
+
+    async delete(connectionString: string, id: string): Promise<boolean> {
+      const deleted = await database(connectionString)
+        .delete(calendarTodos)
+        .where(eq(calendarTodos.id, id))
+        .returning({ id: calendarTodos.id });
       return deleted.length > 0;
     }
   }
