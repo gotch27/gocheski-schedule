@@ -43,6 +43,13 @@
       "when": 1786401171387,
       "tag": "0005_orange_epoch",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1786464142399,
+      "tag": "0006_clear_wong",
+      "breakpoints": true
     }
   ]
 }

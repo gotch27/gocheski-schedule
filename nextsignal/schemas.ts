@@ -12,6 +12,9 @@ const eventFields = {
   recurrenceIntervalWeeks: z.number().int().min(1).max(52).nullable().default(null),
   recurrenceTimeZone: z.string().trim().min(1).max(100).nullable().default(null),
   recurrenceEndsOn: z.iso.date().nullable().default(null),
+  notificationEnabled: z.boolean().default(false),
+  notificationOffsetMinutes: z.number().int().min(0).max(7 * 24 * 60).nullable().default(null),
+  notificationMessage: z.string().trim().max(500).nullable().default(null),
   color: eventColorSchema.default("violet")
 };
 
@@ -21,6 +24,8 @@ type EventFields = {
   recurrenceIntervalWeeks: number | null;
   recurrenceTimeZone: string | null;
   recurrenceEndsOn: string | null;
+  notificationEnabled: boolean;
+  notificationOffsetMinutes: number | null;
 };
 
 function validateEvent(event: EventFields, ctx: z.RefinementCtx) {
@@ -51,6 +56,16 @@ function validateEvent(event: EventFields, ctx: z.RefinementCtx) {
       code: "custom",
       message: "The repeat end date cannot be before the first event.",
       path: ["recurrenceEndsOn"]
+    });
+  }
+
+  if (event.notificationEnabled !== (event.notificationOffsetMinutes !== null)) {
+    ctx.addIssue({
+      code: "custom",
+      message: event.notificationEnabled
+        ? "Choose when the notification should be sent."
+        : "Disable the notification before clearing its lead time.",
+      path: ["notificationOffsetMinutes"]
     });
   }
 }
@@ -136,6 +151,7 @@ export const updateTodoInputSchema = z.discriminatedUnion("action", [
 ]);
 
 export const deleteTodoInputSchema = z.object({ id: z.uuid() });
+export const notificationSyncInputSchema = z.object({});
 
 export type EventColor = z.infer<typeof eventColorSchema>;
 export type RecurringEventScope = z.infer<typeof recurringEventScopeSchema>;
@@ -147,3 +163,4 @@ export type ListTodosInput = z.infer<typeof listTodosInputSchema>;
 export type CreateTodoInput = z.infer<typeof createTodoInputSchema>;
 export type UpdateTodoInput = z.infer<typeof updateTodoInputSchema>;
 export type DeleteTodoInput = z.infer<typeof deleteTodoInputSchema>;
+export type NotificationSyncInput = z.infer<typeof notificationSyncInputSchema>;

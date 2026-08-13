@@ -1,12 +1,15 @@
+import { createHash } from "node:crypto";
 import { neon } from "@neondatabase/serverless";
-import { and, asc, desc, eq, gt, gte, inArray, isNotNull, isNull, lt, or } from "drizzle-orm";
+import { and, asc, desc, eq, gt, gte, inArray, isNotNull, isNull, lt, lte, or } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/neon-http";
 import {
   calendarEventExceptions,
+  calendarEventNotificationDeliveries,
   calendarEvents,
   calendarTodos,
   type CalendarEventExceptionRecord,
   type CalendarEventRecord,
+  type CalendarEventNotificationDeliveryRecord,
   type CalendarTodoRecord,
   type EventColor
 } from "@/db/schema";
@@ -28,6 +31,11 @@ export type CalendarEvent = {
   recurrenceIntervalWeeks: number | null;
   recurrenceTimeZone: string | null;
   recurrenceEndsOn: string | null;
+  notificationEnabled: boolean;
+  notificationOffsetMinutes: number | null;
+  notificationMessage: string | null;
+  notificationAt: string | null;
+  notificationState: "disabled" | "pending" | "scheduled" | "sent" | "failed";
   recurrenceAnchorStartsAt: string;
   occurrenceStartsAt: string;
   isOccurrenceOverride: boolean;
@@ -51,6 +59,22 @@ export type CalendarTodoList = {
   backlog: CalendarTodo[];
   scheduled: CalendarTodo[];
 };
+
+export type NotificationProviderConfig = {
+  baseUrl: string;
+  topic: string;
+  accessToken: string;
+  timeZone: string;
+};
+
+export type NotificationSyncResult = {
+  scheduled: number;
+  cancelled: number;
+  failed: number;
+};
+
+const notificationHorizonMilliseconds = 60 * 60 * 60_000;
+const maximumNotificationOffsetMilliseconds = 7 * 24 * 60 * 60_000;
 
 const databases = new Map<string, ReturnType<typeof createDatabase>>();
 
@@ -76,6 +100,9 @@ function toCalendarEvent(
   record: CalendarEventRecord,
   occurrence = { startsAt: record.startsAt, endsAt: record.endsAt, index: 0 }
 ): CalendarEvent {
+  const notificationAt = record.notificationEnabled && record.notificationOffsetMinutes !== null
+    ? new Date(occurrence.startsAt.getTime() - record.notificationOffsetMinutes * 60_000).toISOString()
+    : null;
   return {
     ...record,
     occurrenceKey: record.recurrenceIntervalWeeks === null
@@ -86,6 +113,8 @@ function toCalendarEvent(
     recurrenceAnchorStartsAt: record.startsAt.toISOString(),
     occurrenceStartsAt: occurrence.startsAt.toISOString(),
     isOccurrenceOverride: false,
+    notificationAt,
+    notificationState: record.notificationEnabled ? "pending" : "disabled",
     createdAt: record.createdAt.toISOString(),
     updatedAt: record.updatedAt.toISOString()
   };
@@ -108,6 +137,24 @@ async function nextTodoSortOrder(db: ReturnType<typeof database>) {
     .orderBy(desc(calendarTodos.sortOrder))
     .limit(1);
   return (lastTodo?.sortOrder ?? -1) + 1;
+}
+
+async function queueDeliveryCancellations(
+  db: ReturnType<typeof database>,
+  eventId: string,
+  occurrenceStartsAt?: Date
+) {
+  const conditions = [
+    eq(calendarEventNotificationDeliveries.eventId, eventId),
+    gt(calendarEventNotificationDeliveries.notifyAt, new Date())
+  ];
+  if (occurrenceStartsAt) {
+    conditions.push(eq(calendarEventNotificationDeliveries.occurrenceStartsAt, occurrenceStartsAt));
+  }
+  await db
+    .update(calendarEventNotificationDeliveries)
+    .set({ state: "cancel_pending", updatedAt: new Date() })
+    .where(and(...conditions));
 }
 
 export const services = {
@@ -177,7 +224,7 @@ export const services = {
         exceptionsByEvent.set(exception.eventId, existing);
       }
 
-      return allRecords
+      const occurrences = allRecords
         .flatMap((record) => occurrencesInRange(
           record,
           rangeStart,
@@ -185,6 +232,7 @@ export const services = {
           exceptionsByEvent.get(record.id) ?? []
         ))
         .sort((left, right) => new Date(left.startsAt).getTime() - new Date(right.startsAt).getTime());
+      return attachDeliveryStates(db, occurrences);
     },
 
     async create(connectionString: string, input: CreateEventInput): Promise<CalendarEvent> {
@@ -198,6 +246,9 @@ export const services = {
           recurrenceIntervalWeeks: input.recurrenceIntervalWeeks,
           recurrenceTimeZone: input.recurrenceIntervalWeeks === null ? null : input.recurrenceTimeZone ?? "UTC",
           recurrenceEndsOn: input.recurrenceIntervalWeeks === null ? null : input.recurrenceEndsOn,
+          notificationEnabled: input.notificationEnabled,
+          notificationOffsetMinutes: input.notificationEnabled ? input.notificationOffsetMinutes : null,
+          notificationMessage: input.notificationEnabled ? input.notificationMessage : null,
           color: input.color
         })
         .returning();
@@ -217,6 +268,7 @@ export const services = {
 
       if (input.scope === "occurrence" && existing.recurrenceIntervalWeeks !== null && input.occurrenceStartsAt) {
         const occurrenceStartsAt = new Date(input.occurrenceStartsAt);
+        await queueDeliveryCancellations(db, existing.id, occurrenceStartsAt);
         const [exception] = await db
           .insert(calendarEventExceptions)
           .values({
@@ -227,6 +279,9 @@ export const services = {
             startsAt: new Date(input.startsAt),
             endsAt: new Date(input.endsAt),
             color: input.color,
+            notificationEnabled: input.notificationEnabled,
+            notificationOffsetMinutes: input.notificationEnabled ? input.notificationOffsetMinutes : null,
+            notificationMessage: input.notificationEnabled ? input.notificationMessage : null,
             isCancelled: false
           })
           .onConflictDoUpdate({
@@ -237,6 +292,9 @@ export const services = {
               startsAt: new Date(input.startsAt),
               endsAt: new Date(input.endsAt),
               color: input.color,
+              notificationEnabled: input.notificationEnabled,
+              notificationOffsetMinutes: input.notificationEnabled ? input.notificationOffsetMinutes : null,
+              notificationMessage: input.notificationEnabled ? input.notificationMessage : null,
               isCancelled: false,
               updatedAt: new Date()
             }
@@ -267,6 +325,7 @@ export const services = {
       }
 
       const storedEnd = new Date(storedStart.getTime() + duration);
+      await queueDeliveryCancellations(db, existing.id);
       const [record] = await db
         .update(calendarEvents)
         .set({
@@ -277,6 +336,9 @@ export const services = {
           recurrenceIntervalWeeks: input.recurrenceIntervalWeeks,
           recurrenceTimeZone,
           recurrenceEndsOn: input.recurrenceIntervalWeeks === null ? null : input.recurrenceEndsOn,
+          notificationEnabled: input.notificationEnabled,
+          notificationOffsetMinutes: input.notificationEnabled ? input.notificationOffsetMinutes : null,
+          notificationMessage: input.notificationEnabled ? input.notificationMessage : null,
           color: input.color,
           updatedAt: new Date()
         })
@@ -303,11 +365,13 @@ export const services = {
       if (!existing) return false;
 
       if (input.scope === "occurrence" && existing.recurrenceIntervalWeeks !== null && input.occurrenceStartsAt) {
+        const occurrenceStartsAt = new Date(input.occurrenceStartsAt);
+        await queueDeliveryCancellations(db, existing.id, occurrenceStartsAt);
         await db
           .insert(calendarEventExceptions)
           .values({
             eventId: existing.id,
-            occurrenceStartsAt: new Date(input.occurrenceStartsAt),
+            occurrenceStartsAt,
             isCancelled: true
           })
           .onConflictDoUpdate({
@@ -326,12 +390,131 @@ export const services = {
         return true;
       }
 
+      await queueDeliveryCancellations(db, existing.id);
       const deleted = await db
         .delete(calendarEvents)
         .where(eq(calendarEvents.id, input.id))
         .returning({ id: calendarEvents.id });
 
       return deleted.length > 0;
+    },
+
+    async findOccurrence(
+      connectionString: string,
+      id: string,
+      occurrenceStartsAt?: string
+    ): Promise<CalendarEvent | null> {
+      const db = database(connectionString);
+      const [record] = await db.select().from(calendarEvents).where(eq(calendarEvents.id, id)).limit(1);
+      if (!record) return null;
+      if (record.recurrenceIntervalWeeks === null) {
+        const [event] = await attachDeliveryStates(db, [toCalendarEvent(record)]);
+        return event ?? null;
+      }
+      const occurrence = occurrenceStartsAt ? new Date(occurrenceStartsAt) : record.startsAt;
+      const [exception] = await db
+        .select()
+        .from(calendarEventExceptions)
+        .where(and(
+          eq(calendarEventExceptions.eventId, id),
+          eq(calendarEventExceptions.occurrenceStartsAt, occurrence)
+        ))
+        .limit(1);
+      if (exception?.isCancelled) return null;
+      const duration = record.endsAt.getTime() - record.startsAt.getTime();
+      const event = exception
+        ? toExceptionCalendarEvent(record, exception)
+        : toCalendarEvent(record, { startsAt: occurrence, endsAt: new Date(occurrence.getTime() + duration), index: 0 });
+      const [withState] = await attachDeliveryStates(db, [event]);
+      return withState ?? null;
+    }
+  },
+
+  notifications: {
+    async reconcile(
+      connectionString: string,
+      provider: NotificationProviderConfig,
+      eventId?: string
+    ): Promise<NotificationSyncResult> {
+      const db = database(connectionString);
+      const now = new Date();
+      const horizon = new Date(now.getTime() + notificationHorizonMilliseconds);
+      const occurrenceEnd = new Date(horizon.getTime() + maximumNotificationOffsetMilliseconds);
+      const occurrences = await loadNotificationOccurrences(db, now, occurrenceEnd, eventId);
+      const desired = occurrences.filter((event) => {
+        if (!event.notificationEnabled || !event.notificationAt) return false;
+        const notifyAt = new Date(event.notificationAt);
+        return notifyAt > now && notifyAt <= horizon;
+      });
+      const desiredKeys = new Set(desired.map((event) => `${event.id}:${event.occurrenceStartsAt}`));
+      const result: NotificationSyncResult = { scheduled: 0, cancelled: 0, failed: 0 };
+
+      const cancellationConditions = [eq(calendarEventNotificationDeliveries.state, "cancel_pending")];
+      if (eventId) cancellationConditions.push(eq(calendarEventNotificationDeliveries.eventId, eventId));
+      const cancellations = await db
+        .select()
+        .from(calendarEventNotificationDeliveries)
+        .where(and(...cancellationConditions));
+
+      for (const delivery of cancellations) {
+        const key = `${delivery.eventId}:${delivery.occurrenceStartsAt.toISOString()}`;
+        if (delivery.eventId && desiredKeys.has(key)) continue;
+        try {
+          await cancelNtfyNotification(provider, delivery.providerSequenceId);
+          await db
+            .update(calendarEventNotificationDeliveries)
+            .set({ state: "cancelled", lastError: null, updatedAt: new Date() })
+            .where(eq(calendarEventNotificationDeliveries.id, delivery.id));
+          result.cancelled += 1;
+        } catch (error) {
+          await db
+            .update(calendarEventNotificationDeliveries)
+            .set({ state: "cancel_pending", lastError: errorMessage(error), updatedAt: new Date() })
+            .where(eq(calendarEventNotificationDeliveries.id, delivery.id));
+          result.failed += 1;
+        }
+      }
+
+      for (const event of desired) {
+        const notifyAt = new Date(event.notificationAt!);
+        const sequenceId = notificationSequenceId(event.id, event.occurrenceStartsAt);
+        const [delivery] = await db
+          .insert(calendarEventNotificationDeliveries)
+          .values({
+            eventId: event.id,
+            occurrenceStartsAt: new Date(event.occurrenceStartsAt),
+            notifyAt,
+            providerSequenceId: sequenceId,
+            state: "pending"
+          })
+          .onConflictDoUpdate({
+            target: [calendarEventNotificationDeliveries.eventId, calendarEventNotificationDeliveries.occurrenceStartsAt],
+            set: {
+              notifyAt,
+              providerSequenceId: sequenceId,
+              state: "pending",
+              lastError: null,
+              updatedAt: new Date()
+            }
+          })
+          .returning();
+        try {
+          await scheduleNtfyNotification(provider, event, sequenceId, notifyAt);
+          await db
+            .update(calendarEventNotificationDeliveries)
+            .set({ state: "scheduled", providerScheduledAt: new Date(), lastError: null, updatedAt: new Date() })
+            .where(eq(calendarEventNotificationDeliveries.id, delivery.id));
+          result.scheduled += 1;
+        } catch (error) {
+          await db
+            .update(calendarEventNotificationDeliveries)
+            .set({ state: "failed", lastError: errorMessage(error), updatedAt: new Date() })
+            .where(eq(calendarEventNotificationDeliveries.id, delivery.id));
+          result.failed += 1;
+        }
+      }
+
+      return result;
     }
   },
 
@@ -429,6 +612,155 @@ export const services = {
 
 const weekMilliseconds = 7 * 24 * 60 * 60 * 1000;
 
+async function loadNotificationOccurrences(
+  db: ReturnType<typeof database>,
+  rangeStart: Date,
+  rangeEnd: Date,
+  eventId?: string
+) {
+  const records = await db
+    .select()
+    .from(calendarEvents)
+    .where(eventId
+      ? eq(calendarEvents.id, eventId)
+      : or(
+          and(
+            isNull(calendarEvents.recurrenceIntervalWeeks),
+            gte(calendarEvents.startsAt, rangeStart),
+            lt(calendarEvents.startsAt, rangeEnd)
+          ),
+          and(
+            isNotNull(calendarEvents.recurrenceIntervalWeeks),
+            lt(calendarEvents.startsAt, rangeEnd)
+          )
+        ));
+  const recurringIds = records
+    .filter((record) => record.recurrenceIntervalWeeks !== null)
+    .map((record) => record.id);
+  const exceptions = recurringIds.length === 0
+    ? []
+    : await db
+        .select()
+        .from(calendarEventExceptions)
+        .where(inArray(calendarEventExceptions.eventId, recurringIds));
+  const exceptionsByEvent = new Map<string, CalendarEventExceptionRecord[]>();
+  for (const exception of exceptions) {
+    const existing = exceptionsByEvent.get(exception.eventId) ?? [];
+    existing.push(exception);
+    exceptionsByEvent.set(exception.eventId, existing);
+  }
+  return records.flatMap((record) => occurrencesInRange(
+    record,
+    rangeStart,
+    rangeEnd,
+    exceptionsByEvent.get(record.id) ?? []
+  ));
+}
+
+function notificationSequenceId(eventId: string, occurrenceStartsAt: string) {
+  return `goch-${createHash("sha256").update(`${eventId}:${occurrenceStartsAt}`).digest("hex").slice(0, 32)}`;
+}
+
+async function scheduleNtfyNotification(
+  provider: NotificationProviderConfig,
+  event: CalendarEvent,
+  sequenceId: string,
+  notifyAt: Date
+) {
+  assertNtfyProvider(provider);
+  const response = await fetch(ntfyMessageUrl(provider, sequenceId), {
+    method: "POST",
+    headers: {
+      "content-type": "text/plain; charset=utf-8",
+      "x-title": encodeNtfyHeader(event.title),
+      "x-at": String(Math.floor(notifyAt.getTime() / 1000)),
+      ...(provider.accessToken ? { authorization: `Bearer ${provider.accessToken}` } : {})
+    },
+    body: event.notificationMessage || defaultNotificationMessage(event, provider.timeZone),
+    cache: "no-store"
+  });
+  if (!response.ok) throw new Error(`ntfy scheduling failed (${response.status}): ${await response.text()}`);
+}
+
+async function cancelNtfyNotification(provider: NotificationProviderConfig, sequenceId: string) {
+  assertNtfyProvider(provider);
+  const response = await fetch(ntfyMessageUrl(provider, sequenceId), {
+    method: "DELETE",
+    headers: provider.accessToken ? { authorization: `Bearer ${provider.accessToken}` } : undefined,
+    cache: "no-store"
+  });
+  if (!response.ok && response.status !== 404) {
+    throw new Error(`ntfy cancellation failed (${response.status}): ${await response.text()}`);
+  }
+}
+
+function assertNtfyProvider(provider: NotificationProviderConfig) {
+  if (!provider.baseUrl || !provider.topic) {
+    throw new Error("ntfy is not configured. Add the notification server and topic environment variables.");
+  }
+}
+
+function ntfyMessageUrl(provider: NotificationProviderConfig, sequenceId: string) {
+  return `${provider.baseUrl.replace(/\/$/, "")}/${encodeURIComponent(provider.topic)}/${encodeURIComponent(sequenceId)}`;
+}
+
+function encodeNtfyHeader(value: string) {
+  return `=?UTF-8?B?${Buffer.from(value, "utf8").toString("base64")}?=`;
+}
+
+function defaultNotificationMessage(event: CalendarEvent, fallbackTimeZone: string) {
+  const offset = event.notificationOffsetMinutes ?? 0;
+  const lead = offset === 0 ? "now" : `in ${formatLeadTime(offset)}`;
+  const time = new Intl.DateTimeFormat("en", {
+    hour: "numeric",
+    minute: "2-digit",
+    timeZone: event.recurrenceTimeZone ?? fallbackTimeZone
+  }).format(new Date(event.startsAt));
+  return offset === 0 ? `Starts now at ${time}.` : `Starts ${lead} at ${time}.`;
+}
+
+function formatLeadTime(minutes: number) {
+  if (minutes % (24 * 60) === 0) {
+    const days = minutes / (24 * 60);
+    return `${days} ${days === 1 ? "day" : "days"}`;
+  }
+  if (minutes % 60 === 0) {
+    const hours = minutes / 60;
+    return `${hours} ${hours === 1 ? "hour" : "hours"}`;
+  }
+  return `${minutes} ${minutes === 1 ? "minute" : "minutes"}`;
+}
+
+function errorMessage(error: unknown) {
+  return error instanceof Error ? error.message.slice(0, 1000) : "Unknown notification provider error.";
+}
+
+async function attachDeliveryStates(
+  db: ReturnType<typeof database>,
+  events: CalendarEvent[]
+): Promise<CalendarEvent[]> {
+  const eventIds = [...new Set(events.filter((event) => event.notificationEnabled).map((event) => event.id))];
+  if (eventIds.length === 0) return events;
+  const deliveries = await db
+    .select()
+    .from(calendarEventNotificationDeliveries)
+    .where(inArray(calendarEventNotificationDeliveries.eventId, eventIds));
+  const byOccurrence = new Map(deliveries.map((delivery) => [
+    `${delivery.eventId}:${delivery.occurrenceStartsAt.toISOString()}`,
+    delivery
+  ]));
+  const now = Date.now();
+  return events.map((event) => {
+    if (!event.notificationEnabled || !event.notificationAt) return event;
+    const delivery = byOccurrence.get(`${event.id}:${event.occurrenceStartsAt}`);
+    if (!delivery) return event;
+    const notificationState: CalendarEvent["notificationState"] = delivery.state === "scheduled"
+      ? new Date(event.notificationAt).getTime() <= now ? "sent" : "scheduled"
+      : delivery.state === "failed" ? "failed" : "pending";
+    return { ...event, notificationState };
+  });
+}
+
 function occurrencesInRange(
   record: CalendarEventRecord,
   rangeStart: Date,
@@ -482,6 +814,16 @@ function toExceptionCalendarEvent(record: CalendarEventRecord, exception: Calend
   const startsAt = exception.startsAt ?? exception.occurrenceStartsAt;
   const endsAt = exception.endsAt ?? new Date(startsAt.getTime() + record.endsAt.getTime() - record.startsAt.getTime());
   const occurrenceStartsAt = exception.occurrenceStartsAt.toISOString();
+  const notificationEnabled = exception.notificationEnabled ?? record.notificationEnabled;
+  const notificationOffsetMinutes = exception.notificationEnabled === null
+    ? record.notificationOffsetMinutes
+    : exception.notificationOffsetMinutes;
+  const notificationMessage = exception.notificationEnabled === null
+    ? record.notificationMessage
+    : exception.notificationMessage;
+  const notificationAt = notificationEnabled && notificationOffsetMinutes !== null
+    ? new Date(startsAt.getTime() - notificationOffsetMinutes * 60_000).toISOString()
+    : null;
 
   return {
     ...toCalendarEvent(record, { startsAt, endsAt, index: 0 }),
@@ -489,6 +831,11 @@ function toExceptionCalendarEvent(record: CalendarEventRecord, exception: Calend
     title: exception.title ?? record.title,
     description: exception.description ?? record.description,
     color: exception.color ?? record.color,
+    notificationEnabled,
+    notificationOffsetMinutes,
+    notificationMessage,
+    notificationAt,
+    notificationState: notificationEnabled ? "pending" : "disabled",
     occurrenceStartsAt,
     isOccurrenceOverride: true,
     updatedAt: exception.updatedAt.toISOString()

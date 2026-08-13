@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  Bell,
   Check,
   CalendarDays,
   ChevronLeft,
@@ -14,6 +15,7 @@ import {
   Pencil,
   Plus,
   Trash2,
+  TriangleAlert,
   Undo2,
   X
 } from "lucide-react";
@@ -35,9 +37,11 @@ import {
   type TodoEditorState,
   type TodoInput
 } from "@/app/components/todo-backlog";
+import { useEscapeKey } from "@/app/hooks/use-escape-key";
 
 type EventColor = "violet" | "blue" | "coral" | "green" | "amber";
 type RecurringEventScope = "series" | "occurrence";
+type NotificationState = "disabled" | "pending" | "scheduled" | "sent" | "failed";
 
 type CalendarEvent = {
   id: string;
@@ -49,6 +53,11 @@ type CalendarEvent = {
   recurrenceIntervalWeeks: number | null;
   recurrenceTimeZone: string | null;
   recurrenceEndsOn: string | null;
+  notificationEnabled: boolean;
+  notificationOffsetMinutes: number | null;
+  notificationMessage: string | null;
+  notificationAt: string | null;
+  notificationState: NotificationState;
   recurrenceAnchorStartsAt: string;
   occurrenceStartsAt: string;
   isOccurrenceOverride: boolean;
@@ -57,7 +66,7 @@ type CalendarEvent = {
   updatedAt: string;
 };
 
-type EventInput = Pick<CalendarEvent, "title" | "description" | "startsAt" | "endsAt" | "recurrenceIntervalWeeks" | "recurrenceTimeZone" | "recurrenceEndsOn" | "color">
+type EventInput = Pick<CalendarEvent, "title" | "description" | "startsAt" | "endsAt" | "recurrenceIntervalWeeks" | "recurrenceTimeZone" | "recurrenceEndsOn" | "notificationEnabled" | "notificationOffsetMinutes" | "notificationMessage" | "color">
   & { occurrenceStartsAt?: string };
 
 type ApiEnvelope<T> = {
@@ -115,7 +124,7 @@ type EditorScopedAction =
   | { kind: "save"; input: EventInput }
   | { kind: "delete" };
 
-type EventClipboard = Pick<CalendarEvent, "title" | "description" | "color"> & {
+type EventClipboard = Pick<CalendarEvent, "title" | "description" | "color" | "notificationEnabled" | "notificationOffsetMinutes" | "notificationMessage"> & {
   durationMinutes: number;
 };
 
@@ -210,6 +219,16 @@ const COLORS: Array<{ value: EventColor; label: string }> = [
   { value: "green", label: "Green" },
   { value: "amber", label: "Amber" }
 ];
+const NOTIFICATION_PRESETS = [
+  { value: 0, label: "At start" },
+  { value: 5, label: "5 minutes before" },
+  { value: 10, label: "10 minutes before" },
+  { value: 15, label: "15 minutes before" },
+  { value: 30, label: "30 minutes before" },
+  { value: 60, label: "1 hour before" },
+  { value: 120, label: "2 hours before" },
+  { value: 24 * 60, label: "1 day before" }
+] as const;
 
 export function WeekCalendar() {
   const [weekStartKey, setWeekStartKey] = useState(() => dateKey(startOfWeek(new Date())));
@@ -702,7 +721,9 @@ export function WeekCalendar() {
       setEvents((current) => [...current, data.event].sort(compareEvents));
     }
     persistedEventsRef.current.set(data.event.occurrenceKey, data.event);
-    setNotice(successNotice);
+    setNotice(data.event.notificationState === "failed"
+      ? `${successNotice}, but the phone notification needs attention`
+      : successNotice);
   }
 
   async function saveFromEditor(
@@ -717,8 +738,11 @@ export function WeekCalendar() {
       const pending = cancelScheduledSave(existing.occurrenceKey);
       const rollback = persistedEventsRef.current.get(existing.occurrenceKey) ?? pending?.baseline ?? previous;
       setEvents((current) => current.map((event) => event.occurrenceKey === existing.occurrenceKey ? optimistic : event));
-      await persistEvent(optimistic, rollback, scope);
-      setNotice(scope === "occurrence" ? "Event updated" : "Series updated");
+      const saved = await persistEvent(optimistic, rollback, scope);
+      const successNotice = scope === "occurrence" ? "Event updated" : "Series updated";
+      setNotice(saved.notificationState === "failed"
+        ? `${successNotice}, but the phone notification needs attention`
+        : successNotice);
     } else {
       await createEvent(input, "Event created");
     }
@@ -801,6 +825,9 @@ export function WeekCalendar() {
       title: event.title,
       description: event.description,
       color: event.color,
+      notificationEnabled: event.notificationEnabled,
+      notificationOffsetMinutes: event.notificationOffsetMinutes,
+      notificationMessage: event.notificationMessage,
       durationMinutes
     });
     setContextMenu(null);
@@ -882,6 +909,13 @@ export function WeekCalendar() {
     );
     const startsAt = localDateAtMinutes(days[menu.dayIndex], startMinutes);
     const endsAt = new Date(startsAt.getTime() + eventClipboard.durationMinutes * 60_000);
+    if (
+      eventClipboard.notificationEnabled
+      && notificationTimeIsTooSoon(startsAt, eventClipboard.notificationOffsetMinutes)
+    ) {
+      setNotice("Paste the event later so its notification is at least one minute from now");
+      return;
+    }
     const input: EventInput = {
       title: eventClipboard.title,
       description: eventClipboard.description,
@@ -890,6 +924,9 @@ export function WeekCalendar() {
       recurrenceIntervalWeeks: null,
       recurrenceTimeZone: null,
       recurrenceEndsOn: null,
+      notificationEnabled: eventClipboard.notificationEnabled,
+      notificationOffsetMinutes: eventClipboard.notificationEnabled ? eventClipboard.notificationOffsetMinutes : null,
+      notificationMessage: eventClipboard.notificationEnabled ? eventClipboard.notificationMessage : null,
       color: eventClipboard.color
     };
 
@@ -951,6 +988,7 @@ export function WeekCalendar() {
         return hasSameEditableValues(event, updated) ? data.event : event;
       }).sort(compareEvents));
       if (reloadAfterSave) void loadEvents();
+      return data.event;
     } catch (error) {
       setEvents((current) => current.map((event) => {
         if (event.occurrenceKey !== previous.occurrenceKey) return event;
@@ -1400,6 +1438,7 @@ export function WeekCalendar() {
                     const layout = eventCardLayout(event, days);
                     if (!layout) return null;
                     const isSelected = selectedEventKeys.has(event.occurrenceKey);
+                    const notificationState = displayedNotificationState(event, now);
 
                     return (
                       <button
@@ -1415,13 +1454,20 @@ export function WeekCalendar() {
                         onPointerCancel={cancelDrag}
                         onContextMenu={(mouseEvent) => openEventContextMenu(mouseEvent, event)}
                         onKeyDown={(keyboardEvent) => handleEventKey(event, keyboardEvent)}
-                        aria-label={`${event.title}, ${formatEventTime(event)}.${formatRecurrenceForAria(event)} Drag to reschedule, press Enter to edit, or right-click to copy.`}
+                        aria-label={`${event.title}, ${formatEventTime(event)}.${formatRecurrenceForAria(event)}${formatNotificationForAria(event, notificationState)} Drag to reschedule, press Enter to edit, or right-click to copy.`}
                       >
                         <span className="event-accent" />
                         <span className="event-copy">
                           <strong>{event.title}</strong>
                           <span data-event-time>{formatEventTime(event)}</span>
                         </span>
+                        {event.notificationEnabled && (
+                          <span className={`event-notification is-${notificationState}`} aria-hidden="true">
+                            <Bell size={13} />
+                            {notificationState === "sent" && <span className="event-notification-badge"><Check size={8} strokeWidth={3} /></span>}
+                            {notificationState === "failed" && <span className="event-notification-badge"><TriangleAlert size={8} strokeWidth={2.5} /></span>}
+                          </span>
+                        )}
                         <span
                           className="event-resize"
                           role="presentation"
@@ -1720,6 +1766,7 @@ function SleepHoursDialog({
   const [startTime, setStartTime] = useState(minutesToInput(value.startMinutes));
   const [endTime, setEndTime] = useState(minutesToInput(value.endMinutes));
   const [error, setError] = useState<string | null>(null);
+  useEscapeKey(onClose);
 
   function submit(formEvent: FormEvent) {
     formEvent.preventDefault();
@@ -1796,9 +1843,20 @@ function EventDialog({
     initial.recurrenceIntervalWeeks !== null && initial.recurrenceEndsOn === null ? "never" : "on"
   );
   const [recurrenceEndsOn, setRecurrenceEndsOn] = useState(initial.recurrenceEndsOn ?? defaultRecurrenceEnd(initial.date));
+  const initialNotificationOffset = initial.notificationOffsetMinutes ?? 15;
+  const [notificationEnabled, setNotificationEnabled] = useState(initial.notificationEnabled);
+  const [notificationLeadMode, setNotificationLeadMode] = useState<string>(
+    NOTIFICATION_PRESETS.some((preset) => preset.value === initialNotificationOffset)
+      ? String(initialNotificationOffset)
+      : "custom"
+  );
+  const [notificationHours, setNotificationHours] = useState(String(Math.floor(initialNotificationOffset / 60)));
+  const [notificationMinutes, setNotificationMinutes] = useState(String(initialNotificationOffset % 60));
+  const [notificationMessage, setNotificationMessage] = useState(initial.notificationMessage ?? "");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [scopedAction, setScopedAction] = useState<EditorScopedAction | null>(null);
+  useEscapeKey(onClose, busy || scopedAction !== null);
 
   async function submit(formEvent: FormEvent) {
     formEvent.preventDefault();
@@ -1820,6 +1878,25 @@ function EventDialog({
       setError("Events must end by midnight on the selected day.");
       return;
     }
+    const selectedNotificationOffset = notificationLeadMode === "custom"
+      ? Number(notificationHours) * 60 + Number(notificationMinutes)
+      : Number(notificationLeadMode);
+    if (
+      notificationEnabled
+      && (!Number.isInteger(selectedNotificationOffset) || selectedNotificationOffset < 0 || selectedNotificationOffset > 7 * 24 * 60)
+    ) {
+      setError("Choose a notification time between the event start and seven days before it.");
+      return;
+    }
+    if (
+      notificationEnabled
+      && notificationTimeIsTooSoon(start, selectedNotificationOffset)
+      && !(existing && needsRecurrenceScopeChoice(existing))
+      && !canKeepSentNotification(existing, start, selectedNotificationOffset, notificationMessage.trim() || null)
+    ) {
+      setError("Choose a notification time at least one minute from now.");
+      return;
+    }
     const input: EventInput = {
       title: title.trim(),
       description: description.trim(),
@@ -1830,6 +1907,9 @@ function EventDialog({
         ? existing?.recurrenceTimeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone ?? "UTC"
         : null,
       recurrenceEndsOn: recurring && recurrenceEndMode === "on" ? recurrenceEndsOn : null,
+      notificationEnabled,
+      notificationOffsetMinutes: notificationEnabled ? selectedNotificationOffset : null,
+      notificationMessage: notificationEnabled ? notificationMessage.trim() || null : null,
       ...(existing ? { occurrenceStartsAt: existing.occurrenceStartsAt } : {}),
       color
     };
@@ -2019,6 +2099,80 @@ function EventDialog({
             <p className="recurrence-note">When you save or delete, choose this event or the entire series.</p>
           )}
 
+          <div className={`notification-control${notificationEnabled ? " is-enabled" : ""}`}>
+            <label className="notification-toggle">
+              <input
+                type="checkbox"
+                checked={notificationEnabled}
+                onChange={(event) => setNotificationEnabled(event.target.checked)}
+              />
+              <span className="notification-toggle-icon"><Bell size={16} /></span>
+              <span>
+                <strong>Notify me</strong>
+                <small>Get a reminder on your phone.</small>
+              </span>
+            </label>
+            {notificationEnabled && (
+              <div className="notification-settings">
+                <label className="field">
+                  <span>Notify before</span>
+                  <select
+                    value={notificationLeadMode}
+                    onChange={(event) => setNotificationLeadMode(event.target.value)}
+                  >
+                    {NOTIFICATION_PRESETS.map((preset) => (
+                      <option key={preset.value} value={preset.value}>{preset.label}</option>
+                    ))}
+                    <option value="custom">Custom…</option>
+                  </select>
+                </label>
+                {notificationLeadMode === "custom" && (
+                  <div className="field notification-custom-time">
+                    <span>Custom lead time</span>
+                    <div className="duration-inputs">
+                      <label>
+                        <input
+                          aria-label="Notification hours before"
+                          type="number"
+                          min={0}
+                          max={168}
+                          step={1}
+                          value={notificationHours}
+                          onChange={(event) => setNotificationHours(event.target.value)}
+                          required
+                        />
+                        <span>hr</span>
+                      </label>
+                      <label>
+                        <input
+                          aria-label="Notification minutes before"
+                          type="number"
+                          min={0}
+                          max={59}
+                          step={1}
+                          value={notificationMinutes}
+                          onChange={(event) => setNotificationMinutes(event.target.value)}
+                          required
+                        />
+                        <span>min</span>
+                      </label>
+                    </div>
+                  </div>
+                )}
+                <label className="field field-wide notification-message">
+                  <span>Notification message <small>optional</small></span>
+                  <textarea
+                    value={notificationMessage}
+                    onChange={(event) => setNotificationMessage(event.target.value)}
+                    placeholder="Leave blank for an automatic reminder."
+                    maxLength={500}
+                    rows={2}
+                  />
+                </label>
+              </div>
+            )}
+          </div>
+
           <label className="field field-wide">
             <span>Notes <small>optional</small></span>
             <textarea value={description} onChange={(event) => setDescription(event.target.value)} placeholder="Add a little context…" maxLength={500} rows={3} />
@@ -2067,6 +2221,8 @@ function BulkDeleteDialog({
   onConfirm: () => void;
   onCancel: () => void;
 }) {
+  useEscapeKey(onCancel, busy);
+
   return (
     <div className="modal-backdrop" role="presentation">
       <section className="scope-dialog" role="dialog" aria-modal="true" aria-labelledby="bulk-delete-dialog-title">
@@ -2096,6 +2252,7 @@ function RecurrenceScopeDialog({
   onCancel: () => void;
 }) {
   const deleting = action === "delete";
+  useEscapeKey(onCancel, busy);
 
   return (
     <div className="modal-backdrop" role="presentation">
@@ -2136,6 +2293,9 @@ function eventPatchBody(event: CalendarEvent, scope: RecurringEventScope) {
     recurrenceIntervalWeeks: event.recurrenceIntervalWeeks,
     recurrenceTimeZone: event.recurrenceTimeZone,
     recurrenceEndsOn: event.recurrenceEndsOn,
+    notificationEnabled: event.notificationEnabled,
+    notificationOffsetMinutes: event.notificationEnabled ? event.notificationOffsetMinutes : null,
+    notificationMessage: event.notificationEnabled ? event.notificationMessage : null,
     occurrenceStartsAt: event.occurrenceStartsAt,
     scope,
     color: event.color
@@ -2154,6 +2314,9 @@ function hasSameEditableValues(left: CalendarEvent, right: CalendarEvent) {
     && left.recurrenceIntervalWeeks === right.recurrenceIntervalWeeks
     && left.recurrenceTimeZone === right.recurrenceTimeZone
     && left.recurrenceEndsOn === right.recurrenceEndsOn
+    && left.notificationEnabled === right.notificationEnabled
+    && left.notificationOffsetMinutes === right.notificationOffsetMinutes
+    && left.notificationMessage === right.notificationMessage
     && left.color === right.color;
 }
 
@@ -2313,6 +2476,39 @@ function formatRecurrenceForAria(event: CalendarEvent) {
   return `${frequency.slice(0, -1)} through ${endDate}.`;
 }
 
+function displayedNotificationState(event: CalendarEvent, now: Date): NotificationState {
+  if (
+    event.notificationState === "scheduled"
+    && event.notificationAt
+    && new Date(event.notificationAt) <= now
+  ) return "sent";
+  return event.notificationState;
+}
+
+function formatNotificationForAria(event: CalendarEvent, state: NotificationState) {
+  if (!event.notificationEnabled) return "";
+  if (state === "sent") return " Notification sent.";
+  if (state === "failed") return " Notification scheduling needs attention.";
+  return " Notification enabled.";
+}
+
+function notificationTimeIsTooSoon(startsAt: Date, offsetMinutes: number | null) {
+  if (offsetMinutes === null) return true;
+  return startsAt.getTime() - offsetMinutes * 60_000 < Date.now() + 60_000;
+}
+
+function canKeepSentNotification(
+  existing: CalendarEvent | null,
+  startsAt: Date,
+  offsetMinutes: number,
+  message: string | null
+) {
+  return existing?.notificationState === "sent"
+    && existing.startsAt === startsAt.toISOString()
+    && existing.notificationOffsetMinutes === offsetMinutes
+    && existing.notificationMessage === message;
+}
+
 function formatWeekRange(start: Date, end: Date) {
   const month = (date: Date) => new Intl.DateTimeFormat("en", { month: "short" }).format(date);
   const sameMonth = start.getMonth() === end.getMonth() && start.getFullYear() === end.getFullYear();
@@ -2354,6 +2550,9 @@ function newEventDraft(date: string, requestedStartMinutes?: number) {
     duration: Math.min(60, DAY_END - rounded),
     recurrenceIntervalWeeks: null,
     recurrenceEndsOn: null,
+    notificationEnabled: false,
+    notificationOffsetMinutes: null,
+    notificationMessage: null,
     color: "violet" as EventColor
   };
 }
@@ -2369,6 +2568,9 @@ function eventToDraft(event: CalendarEvent) {
     duration,
     recurrenceIntervalWeeks: event.recurrenceIntervalWeeks,
     recurrenceEndsOn: event.recurrenceEndsOn,
+    notificationEnabled: event.notificationEnabled,
+    notificationOffsetMinutes: event.notificationOffsetMinutes,
+    notificationMessage: event.notificationMessage,
     color: event.color
   };
 }

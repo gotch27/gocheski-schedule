@@ -15,6 +15,9 @@ export const calendarEvents = pgTable(
     recurrenceIntervalWeeks: integer("recurrence_interval_weeks"),
     recurrenceTimeZone: text("recurrence_time_zone"),
     recurrenceEndsOn: date("recurrence_ends_on"),
+    notificationEnabled: boolean("notification_enabled").notNull().default(false),
+    notificationOffsetMinutes: integer("notification_offset_minutes"),
+    notificationMessage: text("notification_message"),
     color: text("color").$type<EventColor>().notNull().default("violet"),
     createdAt: timestamp("created_at", { withTimezone: true, mode: "date" }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true, mode: "date" }).notNull().defaultNow()
@@ -29,6 +32,10 @@ export const calendarEvents = pgTable(
     check(
       "calendar_events_valid_recurrence_end",
       sql`${event.recurrenceIntervalWeeks} is not null or ${event.recurrenceEndsOn} is null`
+    ),
+    check(
+      "calendar_events_valid_notification",
+      sql`(${event.notificationEnabled} and ${event.notificationOffsetMinutes} between 0 and 10080) or (not ${event.notificationEnabled} and ${event.notificationOffsetMinutes} is null)`
     ),
     check("calendar_events_valid_color", sql`${event.color} in ('violet', 'blue', 'coral', 'green', 'amber')`)
   ]
@@ -47,6 +54,9 @@ export const calendarEventExceptions = pgTable(
     startsAt: timestamp("starts_at", { withTimezone: true, mode: "date" }),
     endsAt: timestamp("ends_at", { withTimezone: true, mode: "date" }),
     color: text("color").$type<EventColor>(),
+    notificationEnabled: boolean("notification_enabled"),
+    notificationOffsetMinutes: integer("notification_offset_minutes"),
+    notificationMessage: text("notification_message"),
     isCancelled: boolean("is_cancelled").notNull().default(false),
     createdAt: timestamp("created_at", { withTimezone: true, mode: "date" }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true, mode: "date" }).notNull().defaultNow()
@@ -61,11 +71,46 @@ export const calendarEventExceptions = pgTable(
     check(
       "calendar_event_exceptions_valid_color",
       sql`${exception.color} is null or ${exception.color} in ('violet', 'blue', 'coral', 'green', 'amber')`
+    ),
+    check(
+      "calendar_event_exceptions_valid_notification",
+      sql`${exception.notificationEnabled} is null or (${exception.notificationEnabled} and ${exception.notificationOffsetMinutes} between 0 and 10080) or (not ${exception.notificationEnabled} and ${exception.notificationOffsetMinutes} is null)`
     )
   ]
 );
 
 export type CalendarEventExceptionRecord = typeof calendarEventExceptions.$inferSelect;
+
+export const notificationDeliveryStates = ["pending", "scheduled", "cancel_pending", "cancelled", "failed"] as const;
+export type NotificationDeliveryState = (typeof notificationDeliveryStates)[number];
+
+export const calendarEventNotificationDeliveries = pgTable(
+  "calendar_event_notification_deliveries",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    eventId: uuid("event_id").references(() => calendarEvents.id, { onDelete: "set null" }),
+    occurrenceStartsAt: timestamp("occurrence_starts_at", { withTimezone: true, mode: "date" }).notNull(),
+    notifyAt: timestamp("notify_at", { withTimezone: true, mode: "date" }).notNull(),
+    providerSequenceId: text("provider_sequence_id").notNull(),
+    state: text("state").$type<NotificationDeliveryState>().notNull().default("pending"),
+    providerScheduledAt: timestamp("provider_scheduled_at", { withTimezone: true, mode: "date" }),
+    lastError: text("last_error"),
+    createdAt: timestamp("created_at", { withTimezone: true, mode: "date" }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true, mode: "date" }).notNull().defaultNow()
+  },
+  (delivery) => [
+    uniqueIndex("calendar_event_notification_deliveries_occurrence_idx").on(delivery.eventId, delivery.occurrenceStartsAt),
+    uniqueIndex("calendar_event_notification_deliveries_sequence_idx").on(delivery.providerSequenceId),
+    index("calendar_event_notification_deliveries_notify_at_idx").on(delivery.notifyAt),
+    index("calendar_event_notification_deliveries_state_idx").on(delivery.state),
+    check(
+      "calendar_event_notification_deliveries_valid_state",
+      sql`${delivery.state} in ('pending', 'scheduled', 'cancel_pending', 'cancelled', 'failed')`
+    )
+  ]
+);
+
+export type CalendarEventNotificationDeliveryRecord = typeof calendarEventNotificationDeliveries.$inferSelect;
 
 export const calendarTodos = pgTable(
   "calendar_todos",

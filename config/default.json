@@ -1,5 +1,11 @@
 {
   "database": {
     "url": ""
+  },
+  "notifications": {
+    "ntfy_base_url": "https://ntfy.sh",
+    "ntfy_topic": "",
+    "ntfy_access_token": "",
+    "time_zone": "Europe/Skopje"
   }
 }

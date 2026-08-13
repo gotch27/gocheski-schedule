@@ -10,6 +10,11 @@ Add your pooled Neon connection string to `.env.local`:
 NEXTSIGNAL_DATABASE__URL=postgresql://user:password@host.neon.tech/database?sslmode=require
 ADMIN_TOKEN=replace-with-the-shared-admin-token
 SESSION_SECRET=replace-with-the-shared-admin-session-secret
+CRON_SECRET=replace-with-a-random-cron-secret
+NEXTSIGNAL_NOTIFICATIONS__NTFY_BASE_URL=https://ntfy.sh
+NEXTSIGNAL_NOTIFICATIONS__NTFY_TOPIC=replace-with-a-long-random-topic
+NEXTSIGNAL_NOTIFICATIONS__NTFY_ACCESS_TOKEN=
+NEXTSIGNAL_NOTIFICATIONS__TIME_ZONE=Europe/Skopje
 ```
 
 Then install dependencies, apply the committed migration, and start the app:
@@ -23,6 +28,12 @@ npm run dev
 Open `http://localhost:3000`.
 
 `ADMIN_TOKEN` and `SESSION_SECRET` should match the values used by `gocheski.com/admin`. The shared signed cookie makes one login valid for both `/admin` and `/schedule` on the production domain.
+
+## Phone notifications
+
+Install the ntfy iPhone app, add a subscription using `https://ntfy.sh`, and enter the exact topic configured in `NEXTSIGNAL_NOTIFICATIONS__NTFY_TOPIC`. Use a long random topic name because an unreserved topic acts like a password. Generate one with `openssl rand -hex 24`.
+
+If the topic belongs to an ntfy account, set `NEXTSIGNAL_NOTIFICATIONS__NTFY_ACCESS_TOKEN` to a publish-capable access token and sign in to the same account in the iPhone app. Add `CRON_SECRET` to the Vercel production environment so Vercel can authenticate the daily notification reconciliation request.
 
 ## Calendar behavior
 

@@ -2,6 +2,7 @@
 
 import { CalendarPlus, ChevronDown, ChevronUp, Clock3, GripVertical, ListTodo, Pencil, Plus, Trash2, X } from "lucide-react";
 import { useState, type FormEvent, type PointerEvent as ReactPointerEvent } from "react";
+import { useEscapeKey } from "@/app/hooks/use-escape-key";
 
 export type CalendarTodo = {
   id: string;
@@ -124,6 +125,7 @@ export function TodoDialog({
   const [durationMinutes, setDurationMinutes] = useState(String((existing?.estimatedMinutes ?? 60) % 60));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  useEscapeKey(onClose, busy);
 
   async function submit(formEvent: FormEvent) {
     formEvent.preventDefault();
@@ -262,6 +264,7 @@ export function TodoScheduleDialog({
   const [time, setTime] = useState(initialTime);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  useEscapeKey(onClose, busy);
 
   async function submit(formEvent: FormEvent) {
     formEvent.preventDefault();
