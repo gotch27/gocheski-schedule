@@ -6,17 +6,22 @@ import {
   calendarEventExceptions,
   calendarEventNotificationDeliveries,
   calendarEvents,
+  calendarToBuyItems,
   calendarTodos,
   type CalendarEventExceptionRecord,
   type CalendarEventRecord,
   type CalendarEventNotificationDeliveryRecord,
+  type CalendarToBuyItemRecord,
   type CalendarTodoRecord,
   type EventColor
 } from "@/db/schema";
 import type {
   CreateEventInput,
+  CreateToBuyItemInput,
   CreateTodoInput,
+  DeleteToBuyItemInput,
   DeleteEventInput,
+  UpdateToBuyItemInput,
   UpdateEventInput,
   UpdateTodoInput
 } from "@/nextsignal/schemas";
@@ -58,6 +63,22 @@ export type CalendarTodo = {
 export type CalendarTodoList = {
   backlog: CalendarTodo[];
   scheduled: CalendarTodo[];
+};
+
+export type CalendarToBuyItem = {
+  id: string;
+  title: string;
+  description: string;
+  url: string | null;
+  scheduledAt: string | null;
+  sortOrder: number;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type CalendarToBuyItemList = {
+  list: CalendarToBuyItem[];
+  scheduled: CalendarToBuyItem[];
 };
 
 export type NotificationProviderConfig = {
@@ -129,6 +150,15 @@ function toCalendarTodo(record: CalendarTodoRecord): CalendarTodo {
   };
 }
 
+function toCalendarToBuyItem(record: CalendarToBuyItemRecord): CalendarToBuyItem {
+  return {
+    ...record,
+    scheduledAt: record.scheduledAt?.toISOString() ?? null,
+    createdAt: record.createdAt.toISOString(),
+    updatedAt: record.updatedAt.toISOString()
+  };
+}
+
 async function nextTodoSortOrder(db: ReturnType<typeof database>) {
   const [lastTodo] = await db
     .select({ sortOrder: calendarTodos.sortOrder })
@@ -137,6 +167,16 @@ async function nextTodoSortOrder(db: ReturnType<typeof database>) {
     .orderBy(desc(calendarTodos.sortOrder))
     .limit(1);
   return (lastTodo?.sortOrder ?? -1) + 1;
+}
+
+async function nextToBuySortOrder(db: ReturnType<typeof database>) {
+  const [lastItem] = await db
+    .select({ sortOrder: calendarToBuyItems.sortOrder })
+    .from(calendarToBuyItems)
+    .where(isNull(calendarToBuyItems.scheduledAt))
+    .orderBy(desc(calendarToBuyItems.sortOrder))
+    .limit(1);
+  return (lastItem?.sortOrder ?? -1) + 1;
 }
 
 async function queueDeliveryCancellations(
@@ -605,6 +645,97 @@ export const services = {
         .delete(calendarTodos)
         .where(eq(calendarTodos.id, id))
         .returning({ id: calendarTodos.id });
+      return deleted.length > 0;
+    }
+  },
+
+  toBuyItems: {
+    async list(connectionString: string, weekStart: string, weekEnd: string): Promise<CalendarToBuyItemList> {
+      const db = database(connectionString);
+      const rangeStart = new Date(weekStart);
+      const rangeEnd = new Date(weekEnd);
+      const [listRecords, scheduledRecords] = await Promise.all([
+        db
+          .select()
+          .from(calendarToBuyItems)
+          .where(isNull(calendarToBuyItems.scheduledAt))
+          .orderBy(asc(calendarToBuyItems.sortOrder), asc(calendarToBuyItems.createdAt)),
+        db
+          .select()
+          .from(calendarToBuyItems)
+          .where(and(
+            isNotNull(calendarToBuyItems.scheduledAt),
+            gte(calendarToBuyItems.scheduledAt, rangeStart),
+            lt(calendarToBuyItems.scheduledAt, rangeEnd)
+          ))
+          .orderBy(asc(calendarToBuyItems.scheduledAt))
+      ]);
+      return {
+        list: listRecords.map(toCalendarToBuyItem),
+        scheduled: scheduledRecords.map(toCalendarToBuyItem)
+      };
+    },
+
+    async create(connectionString: string, input: CreateToBuyItemInput): Promise<CalendarToBuyItem> {
+      const db = database(connectionString);
+      const [record] = await db
+        .insert(calendarToBuyItems)
+        .values({
+          title: input.title,
+          description: input.description,
+          url: input.url,
+          scheduledAt: null,
+          sortOrder: await nextToBuySortOrder(db)
+        })
+        .returning();
+      return toCalendarToBuyItem(record);
+    },
+
+    async update(connectionString: string, input: UpdateToBuyItemInput): Promise<CalendarToBuyItem[] | null> {
+      const db = database(connectionString);
+      if (input.action === "reorder") {
+        const existing = await db
+          .select({ id: calendarToBuyItems.id })
+          .from(calendarToBuyItems)
+          .where(and(isNull(calendarToBuyItems.scheduledAt), inArray(calendarToBuyItems.id, input.orderedIds)));
+        if (existing.length !== input.orderedIds.length) return null;
+        for (const [sortOrder, id] of input.orderedIds.entries()) {
+          await db
+            .update(calendarToBuyItems)
+            .set({ sortOrder, updatedAt: new Date() })
+            .where(and(eq(calendarToBuyItems.id, id), isNull(calendarToBuyItems.scheduledAt)));
+        }
+        const reordered = await db
+          .select()
+          .from(calendarToBuyItems)
+          .where(isNull(calendarToBuyItems.scheduledAt))
+          .orderBy(asc(calendarToBuyItems.sortOrder), asc(calendarToBuyItems.createdAt));
+        return reordered.map(toCalendarToBuyItem);
+      }
+
+      const values = input.action === "update"
+        ? {
+            title: input.title,
+            description: input.description,
+            url: input.url,
+            updatedAt: new Date()
+          }
+        : input.action === "schedule"
+          ? { scheduledAt: new Date(input.scheduledAt), updatedAt: new Date() }
+          : { scheduledAt: null, sortOrder: await nextToBuySortOrder(db), updatedAt: new Date() };
+      const [record] = await db
+        .update(calendarToBuyItems)
+        .set(values)
+        .where(eq(calendarToBuyItems.id, input.id))
+        .returning();
+      return record ? [toCalendarToBuyItem(record)] : null;
+    },
+
+    async delete(connectionString: string, input: DeleteToBuyItemInput): Promise<boolean> {
+      const deleted = await database(connectionString)
+        .delete(calendarToBuyItems)
+        .where(eq(calendarToBuyItems.id, input.id))
+        .returning({ id: calendarToBuyItems.id });
       return deleted.length > 0;
     }
   }

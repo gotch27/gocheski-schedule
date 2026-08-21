@@ -1,5 +1,6 @@
 import { createEventApi, deleteEventApi, listEventsApi, updateEventApi } from "@/nextsignal/processes/api/events";
 import { createTodoApi, deleteTodoApi, listTodosApi, updateTodoApi } from "@/nextsignal/processes/api/todos";
+import { createToBuyItemApi, deleteToBuyItemApi, listToBuyItemsApi, updateToBuyItemApi } from "@/nextsignal/processes/api/to-buy";
 import { syncNotificationsApi } from "@/nextsignal/processes/api/notifications";
 import {
   createEventBusiness,
@@ -14,6 +15,12 @@ import {
   updateTodoBusiness
 } from "@/nextsignal/processes/business/todos";
 import { syncNotificationsBusiness } from "@/nextsignal/processes/business/notifications";
+import {
+  createToBuyItemBusiness,
+  deleteToBuyItemBusiness,
+  listToBuyItemsBusiness,
+  updateToBuyItemBusiness
+} from "@/nextsignal/processes/business/to-buy";
 
 export const processes = [
   listEventsApi,
@@ -24,6 +31,10 @@ export const processes = [
   createTodoApi,
   updateTodoApi,
   deleteTodoApi,
+  listToBuyItemsApi,
+  createToBuyItemApi,
+  updateToBuyItemApi,
+  deleteToBuyItemApi,
   syncNotificationsApi,
   listEventsBusiness,
   createEventBusiness,
@@ -33,5 +44,9 @@ export const processes = [
   createTodoBusiness,
   updateTodoBusiness,
   deleteTodoBusiness,
+  listToBuyItemsBusiness,
+  createToBuyItemBusiness,
+  updateToBuyItemBusiness,
+  deleteToBuyItemBusiness,
   syncNotificationsBusiness
 ];

@@ -758,6 +758,20 @@ button {
   box-shadow: 0 10px 20px rgba(35, 52, 24, 0.2);
 }
 
+.events-layer .calendar-to-buy-quick {
+  border-color: #e2c98b;
+  border-left-color: #9a6d13;
+  background: rgba(255, 249, 232, 0.98);
+  color: #705015;
+  box-shadow: 0 2px 7px rgba(94, 66, 13, 0.11);
+}
+
+.calendar-to-buy-quick:hover,
+.calendar-to-buy-quick:focus-visible {
+  border-color: #9a6d13;
+  box-shadow: 0 6px 14px rgba(94, 66, 13, 0.17);
+}
+
 .selection-box {
   position: absolute;
   z-index: 30;
@@ -1039,6 +1053,54 @@ button {
   vertical-align: 4px;
 }
 
+.backlog-section-tabs {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
+  margin: -2px 0 12px;
+  padding: 4px;
+  border: 1px solid #d5d5d0;
+  border-radius: 9px;
+  background: #efefeb;
+}
+
+.backlog-section-tabs button {
+  min-width: 0;
+  height: 34px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #686f7b;
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 750;
+}
+
+.backlog-section-tabs button.is-active {
+  background: #ffffff;
+  color: #111111;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.09);
+}
+
+.backlog-section-tabs button span {
+  min-width: 18px;
+  height: 18px;
+  display: inline-grid;
+  place-items: center;
+  border-radius: 99px;
+  background: #e5e5e0;
+  font-size: 9px;
+}
+
+.backlog-section-tabs button.is-active span {
+  background: #edede8;
+}
+
 .todo-add-button {
   min-height: 40px;
   display: flex;
@@ -1078,7 +1140,8 @@ button {
 }
 
 .todo-drag-handle,
-.todo-backlog-actions button {
+.todo-backlog-actions button,
+.todo-backlog-actions a {
   display: grid;
   place-items: center;
   padding: 0;
@@ -1101,7 +1164,8 @@ button {
 }
 
 .todo-drag-handle:hover,
-.todo-backlog-actions button:hover:not(:disabled) {
+.todo-backlog-actions button:hover:not(:disabled),
+.todo-backlog-actions a:hover {
   background: #f0f0ec;
   color: #000000;
 }
@@ -1139,9 +1203,24 @@ button {
   gap: 2px;
 }
 
-.todo-backlog-actions button {
+.todo-backlog-actions.to-buy-actions {
+  grid-template-columns: 24px 24px 24px;
+}
+
+.todo-backlog-actions button,
+.todo-backlog-actions a,
+.todo-backlog-actions > span {
   width: 24px;
   height: 22px;
+}
+
+.todo-backlog-actions a {
+  text-decoration: none;
+}
+
+.to-buy-item-icon {
+  justify-self: center;
+  color: #777e89;
 }
 
 .todo-backlog-actions button:disabled {
@@ -1206,6 +1285,16 @@ button {
 .todo-drag-ghost.is-over-calendar {
   border-color: #4f673a;
   background: #edf4e7;
+}
+
+.to-buy-drag-ghost {
+  border-color: #d2b46c;
+  color: #705015;
+}
+
+.to-buy-drag-ghost.is-over-calendar {
+  border-color: #9a6d13;
+  background: #fff7e2;
 }
 
 .todo-drag-ghost span {
@@ -1444,6 +1533,38 @@ button {
 
 .todo-duration-field {
   max-width: 270px;
+}
+
+.to-buy-link-field > div {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 10px;
+  border: 1px solid #c8cbd2;
+  border-radius: 7px;
+  background: #ffffff;
+  color: #777e89;
+}
+
+.to-buy-link-field > div:focus-within {
+  border-color: #000000;
+  box-shadow: 0 0 0 1px #000000;
+  color: #111111;
+}
+
+.to-buy-link-field input {
+  min-width: 0;
+  flex: 1;
+  padding-right: 0;
+  padding-left: 0;
+  border: 0;
+  outline: 0;
+  box-shadow: none;
+}
+
+.field.to-buy-link-field input:focus {
+  border: 0;
+  box-shadow: none;
 }
 
 .todo-dialog-actions {

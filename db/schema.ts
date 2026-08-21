@@ -136,3 +136,24 @@ export const calendarTodos = pgTable(
 );
 
 export type CalendarTodoRecord = typeof calendarTodos.$inferSelect;
+
+export const calendarToBuyItems = pgTable(
+  "calendar_to_buy_items",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    title: text("title").notNull(),
+    description: text("description").notNull().default(""),
+    url: text("url"),
+    scheduledAt: timestamp("scheduled_at", { withTimezone: true, mode: "date" }),
+    sortOrder: integer("sort_order").notNull().default(0),
+    createdAt: timestamp("created_at", { withTimezone: true, mode: "date" }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true, mode: "date" }).notNull().defaultNow()
+  },
+  (item) => [
+    index("calendar_to_buy_items_sort_order_idx").on(item.sortOrder),
+    index("calendar_to_buy_items_scheduled_at_idx").on(item.scheduledAt),
+    check("calendar_to_buy_items_valid_sort_order", sql`${item.sortOrder} >= 0`)
+  ]
+);
+
+export type CalendarToBuyItemRecord = typeof calendarToBuyItems.$inferSelect;

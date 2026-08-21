@@ -1,0 +1,2 @@
+ALTER TABLE "calendar_to_buy_items" ADD COLUMN "scheduled_at" timestamp with time zone;--> statement-breakpoint
+CREATE INDEX "calendar_to_buy_items_scheduled_at_idx" ON "calendar_to_buy_items" USING btree ("scheduled_at");

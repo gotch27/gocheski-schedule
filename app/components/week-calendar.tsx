@@ -8,12 +8,14 @@ import {
   ChevronRight,
   ClipboardPaste,
   Copy,
+  ExternalLink,
   GripHorizontal,
   ListTodo,
   LogOut,
   Moon,
   Pencil,
   Plus,
+  ShoppingBag,
   Trash2,
   TriangleAlert,
   Undo2,
@@ -33,7 +35,12 @@ import {
   TodoBacklog,
   TodoDialog,
   TodoScheduleDialog,
+  ToBuyDialog,
+  ToBuyScheduleDialog,
+  type CalendarToBuyItem,
   type CalendarTodo,
+  type ToBuyEditorState,
+  type ToBuyInput,
   type TodoEditorState,
   type TodoInput
 } from "@/app/components/todo-backlog";
@@ -157,7 +164,14 @@ type TodoContextMenu = {
   todo: CalendarTodo;
 };
 
-type ContextMenu = CalendarContextMenu | EventContextMenu | SelectionContextMenu | TodoContextMenu;
+type ToBuyContextMenu = {
+  kind: "to-buy";
+  x: number;
+  y: number;
+  item: CalendarToBuyItem;
+};
+
+type ContextMenu = CalendarContextMenu | EventContextMenu | SelectionContextMenu | TodoContextMenu | ToBuyContextMenu;
 
 type ContextDelete = {
   event: CalendarEvent;
@@ -179,6 +193,27 @@ type BacklogTodoGhost = {
   x: number;
   y: number;
   overCalendar: boolean;
+};
+
+type ToBuyDragState = {
+  pointerId: number;
+  item: CalendarToBuyItem;
+};
+
+type ToBuyGhost = {
+  item: CalendarToBuyItem;
+  x: number;
+  y: number;
+  overCalendar: boolean;
+};
+
+type ScheduledToBuyDragState = {
+  pointerId: number;
+  original: CalendarToBuyItem;
+  current: CalendarToBuyItem;
+  startClientX: number;
+  startClientY: number;
+  moved: boolean;
 };
 
 type ScheduledTodoDragState = {
@@ -210,6 +245,7 @@ const SLEEP_HOURS_STORAGE_KEY = "gocheski-schedule:sleep-hours";
 const DEFAULT_SLEEP_HOURS: SleepHours = { startMinutes: 23 * 60, endMinutes: 7 * 60 };
 const EVENTS_API_PATH = "/schedule/api/events";
 const TODOS_API_PATH = "/schedule/api/todos";
+const TO_BUY_API_PATH = "/schedule/api/to-buy";
 const LOGIN_API_PATH = "/schedule/api/auth/login";
 const DAY_NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
 const COLORS: Array<{ value: EventColor; label: string }> = [
@@ -235,16 +271,23 @@ export function WeekCalendar() {
   const [events, setEvents] = useState<CalendarEvent[]>([]);
   const [backlogTodos, setBacklogTodos] = useState<CalendarTodo[]>([]);
   const [scheduledTodos, setScheduledTodos] = useState<CalendarTodo[]>([]);
+  const [toBuyItems, setToBuyItems] = useState<CalendarToBuyItem[]>([]);
+  const [scheduledToBuyItems, setScheduledToBuyItems] = useState<CalendarToBuyItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [todosLoading, setTodosLoading] = useState(true);
+  const [toBuyLoading, setToBuyLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [editor, setEditor] = useState<EditorState | null>(null);
   const [todoEditor, setTodoEditor] = useState<TodoEditorState | null>(null);
   const [todoScheduleEditor, setTodoScheduleEditor] = useState<CalendarTodo | null>(null);
+  const [toBuyEditor, setToBuyEditor] = useState<ToBuyEditorState | null>(null);
+  const [toBuyScheduleEditor, setToBuyScheduleEditor] = useState<CalendarToBuyItem | null>(null);
   const [backlogOpen, setBacklogOpen] = useState(false);
   const [backlogTodoGhost, setBacklogTodoGhost] = useState<BacklogTodoGhost | null>(null);
+  const [toBuyGhost, setToBuyGhost] = useState<ToBuyGhost | null>(null);
   const [activeTodoId, setActiveTodoId] = useState<string | null>(null);
+  const [activeToBuyId, setActiveToBuyId] = useState<string | null>(null);
   const [activeEventKey, setActiveEventKey] = useState<string | null>(null);
   const [pendingScopeChange, setPendingScopeChange] = useState<PendingScopeChange | null>(null);
   const [eventClipboard, setEventClipboard] = useState<EventClipboard | null>(null);
@@ -263,7 +306,9 @@ export function WeekCalendar() {
   const initialScrollAppliedRef = useRef(false);
   const dragRef = useRef<DragState | null>(null);
   const backlogTodoDragRef = useRef<BacklogTodoDragState | null>(null);
+  const toBuyDragRef = useRef<ToBuyDragState | null>(null);
   const scheduledTodoDragRef = useRef<ScheduledTodoDragState | null>(null);
+  const scheduledToBuyDragRef = useRef<ScheduledToBuyDragState | null>(null);
   const dragFrameRef = useRef<number | null>(null);
   const selectionDragRef = useRef<SelectionDragState | null>(null);
   const pendingSavesRef = useRef(new Map<string, PendingSave>());
@@ -317,10 +362,32 @@ export function WeekCalendar() {
     }
   }, [weekStartKey]);
 
+  const loadToBuyItems = useCallback(async () => {
+    const rangeStart = parseDateKey(weekStartKey);
+    const rangeEnd = addDays(rangeStart, 7);
+    setToBuyLoading(true);
+    try {
+      const query = new URLSearchParams({
+        weekStart: rangeStart.toISOString(),
+        weekEnd: rangeEnd.toISOString()
+      });
+      const data = await apiRequest<{ list: CalendarToBuyItem[]; scheduled: CalendarToBuyItem[] }>(`${TO_BUY_API_PATH}?${query}`);
+      setToBuyItems(data.list);
+      setScheduledToBuyItems(data.scheduled);
+    } catch (error) {
+      setToBuyItems([]);
+      setScheduledToBuyItems([]);
+      setLoadError(readError(error));
+    } finally {
+      setToBuyLoading(false);
+    }
+  }, [weekStartKey]);
+
   useEffect(() => {
     void loadEvents();
     void loadTodos();
-  }, [loadEvents, loadTodos]);
+    void loadToBuyItems();
+  }, [loadEvents, loadTodos, loadToBuyItems]);
 
   useEffect(() => {
     setSelectedEventKeys(new Set());
@@ -492,6 +559,90 @@ export function WeekCalendar() {
     setNotice("To-do deleted");
   }
 
+  async function saveToBuyItem(input: ToBuyInput, existing?: CalendarToBuyItem) {
+    if (existing) {
+      const data = await apiRequest<{ items: CalendarToBuyItem[] }>(TO_BUY_API_PATH, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ action: "update", id: existing.id, ...input })
+      });
+      const updated = data.items[0];
+      setToBuyItems((current) => current.map((item) => item.id === updated.id ? updated : item));
+      setScheduledToBuyItems((current) => current.map((item) => item.id === updated.id ? updated : item));
+      setNotice("To-buy item updated");
+    } else {
+      const data = await apiRequest<{ item: CalendarToBuyItem }>(TO_BUY_API_PATH, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(input)
+      });
+      setToBuyItems((current) => [...current, data.item]);
+      setNotice("Added to your to-buy list");
+    }
+    setToBuyEditor(null);
+  }
+
+  async function deleteToBuyItem(item: CalendarToBuyItem) {
+    await apiRequest<{ id: string }>(TO_BUY_API_PATH, {
+      method: "DELETE",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ id: item.id })
+    });
+    setToBuyItems((current) => current.filter((currentItem) => currentItem.id !== item.id));
+    setScheduledToBuyItems((current) => current.filter((currentItem) => currentItem.id !== item.id));
+    setToBuyEditor(null);
+    setNotice("To-buy item deleted");
+  }
+
+  async function scheduleToBuyItem(item: CalendarToBuyItem, scheduledAt: Date) {
+    const data = await apiRequest<{ items: CalendarToBuyItem[] }>(TO_BUY_API_PATH, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ action: "schedule", id: item.id, scheduledAt: scheduledAt.toISOString() })
+    });
+    const updated = data.items[0];
+    setToBuyItems((current) => current.filter((currentItem) => currentItem.id !== updated.id));
+    const scheduledWeek = dateKey(startOfWeek(scheduledAt));
+    if (scheduledWeek !== weekStartKey) {
+      setWeekStartKey(scheduledWeek);
+    } else {
+      setScheduledToBuyItems((current) => [...current.filter((currentItem) => currentItem.id !== updated.id), updated].sort(compareToBuyItems));
+    }
+    setNotice("To-buy item added to calendar");
+  }
+
+  async function returnToBuyItemToList(item: CalendarToBuyItem) {
+    const data = await apiRequest<{ items: CalendarToBuyItem[] }>(TO_BUY_API_PATH, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ action: "unschedule", id: item.id })
+    });
+    const updated = data.items[0];
+    setScheduledToBuyItems((current) => current.filter((currentItem) => currentItem.id !== updated.id));
+    setToBuyItems((current) => [...current.filter((currentItem) => currentItem.id !== updated.id), updated]);
+    setNotice("Returned to the to-buy list");
+  }
+
+  async function reorderToBuyItems(index: number, offset: -1 | 1) {
+    const targetIndex = index + offset;
+    if (targetIndex < 0 || targetIndex >= toBuyItems.length) return;
+    const previous = toBuyItems;
+    const reordered = [...toBuyItems];
+    [reordered[index], reordered[targetIndex]] = [reordered[targetIndex], reordered[index]];
+    setToBuyItems(reordered);
+    try {
+      const data = await apiRequest<{ items: CalendarToBuyItem[] }>(TO_BUY_API_PATH, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ action: "reorder", orderedIds: reordered.map((item) => item.id) })
+      });
+      setToBuyItems(data.items);
+    } catch (error) {
+      setToBuyItems(previous);
+      setNotice(readError(error));
+    }
+  }
+
   async function reorderBacklogTodos(index: number, offset: -1 | 1) {
     const targetIndex = index + offset;
     if (targetIndex < 0 || targetIndex >= backlogTodos.length) return;
@@ -600,6 +751,57 @@ export function WeekCalendar() {
     setBacklogTodoGhost(null);
   }
 
+  function startToBuyDrag(pointerEvent: ReactPointerEvent<HTMLButtonElement>, item: CalendarToBuyItem) {
+    if (pointerEvent.button !== 0) return;
+    pointerEvent.currentTarget.setPointerCapture(pointerEvent.pointerId);
+    toBuyDragRef.current = { pointerId: pointerEvent.pointerId, item };
+    setToBuyGhost({ item, x: pointerEvent.clientX, y: pointerEvent.clientY, overCalendar: false });
+    pointerEvent.preventDefault();
+  }
+
+  function moveToBuyDrag(pointerEvent: ReactPointerEvent<HTMLButtonElement>) {
+    const drag = toBuyDragRef.current;
+    const timeline = timelineRef.current;
+    if (!drag || !timeline || drag.pointerId !== pointerEvent.pointerId) return;
+    const rect = timeline.getBoundingClientRect();
+    const overCalendar = pointerEvent.clientX >= rect.left + TIME_GUTTER
+      && pointerEvent.clientX <= rect.right
+      && pointerEvent.clientY >= rect.top
+      && pointerEvent.clientY <= rect.bottom;
+    setToBuyGhost({ item: drag.item, x: pointerEvent.clientX, y: pointerEvent.clientY, overCalendar });
+  }
+
+  function endToBuyDrag(pointerEvent: ReactPointerEvent<HTMLButtonElement>) {
+    const drag = toBuyDragRef.current;
+    const timeline = timelineRef.current;
+    toBuyDragRef.current = null;
+    setToBuyGhost(null);
+    if (!drag || !timeline || drag.pointerId !== pointerEvent.pointerId) return;
+    const rect = timeline.getBoundingClientRect();
+    const contentX = pointerEvent.clientX - rect.left - TIME_GUTTER;
+    if (
+      contentX < 0
+      || contentX >= rect.width - TIME_GUTTER
+      || pointerEvent.clientY < rect.top
+      || pointerEvent.clientY > rect.bottom
+    ) return;
+    const dayWidth = (rect.width - TIME_GUTTER) / 7;
+    const dayIndex = clamp(Math.floor(contentX / dayWidth), 0, 6);
+    const startMinutes = clamp(
+      snapMinutes(DAY_START + ((pointerEvent.clientY - rect.top) / rect.height) * TOTAL_MINUTES),
+      DAY_START,
+      DAY_END - SLOT_MINUTES
+    );
+    void scheduleToBuyItem(drag.item, localDateAtMinutes(days[dayIndex], startMinutes)).catch((error) => {
+      setNotice(readError(error));
+    });
+  }
+
+  function cancelToBuyDrag() {
+    toBuyDragRef.current = null;
+    setToBuyGhost(null);
+  }
+
   function startScheduledTodoDrag(
     pointerEvent: ReactPointerEvent<HTMLElement>,
     todo: CalendarTodo,
@@ -701,6 +903,68 @@ export function WeekCalendar() {
     pointerEvent.stopPropagation();
   }
 
+  function startScheduledToBuyDrag(pointerEvent: ReactPointerEvent<HTMLElement>, item: CalendarToBuyItem) {
+    if (pointerEvent.button !== 0 || !item.scheduledAt) return;
+    pointerEvent.currentTarget.setPointerCapture(pointerEvent.pointerId);
+    scheduledToBuyDragRef.current = {
+      pointerId: pointerEvent.pointerId,
+      original: item,
+      current: item,
+      startClientX: pointerEvent.clientX,
+      startClientY: pointerEvent.clientY,
+      moved: false
+    };
+    setActiveToBuyId(item.id);
+    setContextMenu(null);
+    pointerEvent.preventDefault();
+    pointerEvent.stopPropagation();
+  }
+
+  function moveScheduledToBuyDrag(pointerEvent: ReactPointerEvent<HTMLElement>) {
+    const drag = scheduledToBuyDragRef.current;
+    const timeline = timelineRef.current;
+    if (!drag || !timeline || drag.pointerId !== pointerEvent.pointerId) return;
+    if (!drag.moved && Math.hypot(pointerEvent.clientX - drag.startClientX, pointerEvent.clientY - drag.startClientY) < 3) return;
+    const rect = timeline.getBoundingClientRect();
+    const dayWidth = (rect.width - TIME_GUTTER) / 7;
+    const dayIndex = clamp(Math.floor((pointerEvent.clientX - rect.left - TIME_GUTTER) / dayWidth), 0, 6);
+    const startMinutes = clamp(
+      snapMinutes(DAY_START + ((pointerEvent.clientY - rect.top) / rect.height) * TOTAL_MINUTES),
+      DAY_START,
+      DAY_END - SLOT_MINUTES
+    );
+    const current = { ...drag.current, scheduledAt: localDateAtMinutes(days[dayIndex], startMinutes).toISOString() };
+    scheduledToBuyDragRef.current = { ...drag, current, moved: true };
+    setScheduledToBuyItems((items) => items.map((item) => item.id === current.id ? current : item));
+    pointerEvent.preventDefault();
+    pointerEvent.stopPropagation();
+  }
+
+  function endScheduledToBuyDrag(pointerEvent: ReactPointerEvent<HTMLElement>) {
+    const drag = scheduledToBuyDragRef.current;
+    if (!drag || drag.pointerId !== pointerEvent.pointerId) return;
+    scheduledToBuyDragRef.current = null;
+    setActiveToBuyId(null);
+    pointerEvent.stopPropagation();
+    if (!drag.moved || !drag.current.scheduledAt) {
+      setToBuyEditor({ mode: "edit", item: drag.original });
+      return;
+    }
+    void scheduleToBuyItem(drag.current, new Date(drag.current.scheduledAt)).catch((error) => {
+      setScheduledToBuyItems((items) => items.map((item) => item.id === drag.original.id ? drag.original : item));
+      setNotice(readError(error));
+    });
+  }
+
+  function cancelScheduledToBuyDrag(pointerEvent: ReactPointerEvent<HTMLElement>) {
+    const drag = scheduledToBuyDragRef.current;
+    if (!drag || drag.pointerId !== pointerEvent.pointerId) return;
+    scheduledToBuyDragRef.current = null;
+    setActiveToBuyId(null);
+    setScheduledToBuyItems((items) => items.map((item) => item.id === drag.original.id ? drag.original : item));
+    pointerEvent.stopPropagation();
+  }
+
   function openCreate(
     date = dateKey(isDateInWeek(new Date(), days) ? new Date() : days[0]),
     startMinutes?: number
@@ -781,6 +1045,17 @@ export function WeekCalendar() {
       kind: "todo",
       ...contextMenuPosition(mouseEvent.clientX, mouseEvent.clientY, 126),
       todo
+    });
+  }
+
+  function openToBuyContextMenu(mouseEvent: ReactMouseEvent, item: CalendarToBuyItem) {
+    mouseEvent.preventDefault();
+    mouseEvent.stopPropagation();
+    setSelectedEventKeys(new Set());
+    setContextMenu({
+      kind: "to-buy",
+      ...contextMenuPosition(mouseEvent.clientX, mouseEvent.clientY, item.url ? 164 : 126),
+      item
     });
   }
 
@@ -1327,13 +1602,15 @@ export function WeekCalendar() {
           <button
             className={`toolbar-icon-button backlog-toggle${backlogOpen ? " is-active" : ""}`}
             type="button"
-            aria-label="Open to-do backlog"
+            aria-label="Open backlog and to-buy lists"
             aria-pressed={backlogOpen}
-            title="To-do backlog"
+            title="Backlog and to-buy lists"
             onClick={() => setBacklogOpen((current) => !current)}
           >
             <ListTodo size={16} />
-            {backlogTodos.length > 0 && <span>{backlogTodos.length > 99 ? "99+" : backlogTodos.length}</span>}
+            {backlogTodos.length + toBuyItems.length > 0 && (
+              <span>{backlogTodos.length + toBuyItems.length > 99 ? "99+" : backlogTodos.length + toBuyItems.length}</span>
+            )}
           </button>
           <button
             className={`toolbar-icon-button${sleepHours ? " is-active" : ""}`}
@@ -1361,7 +1638,11 @@ export function WeekCalendar() {
           <div className="connection-banner" role="status">
             <span><span className="connection-dot" /> Database setup needed</span>
             <p>{loadError}</p>
-            <button type="button" onClick={() => void loadEvents()}>Try again</button>
+            <button type="button" onClick={() => {
+              void loadEvents();
+              void loadTodos();
+              void loadToBuyItems();
+            }}>Try again</button>
           </div>
         )}
 
@@ -1535,6 +1816,29 @@ export function WeekCalendar() {
                       </button>
                     );
                   })}
+
+                  {scheduledToBuyItems.map((item) => {
+                    const layout = toBuyCalendarLayout(item, days);
+                    if (!layout) return null;
+                    return (
+                      <button
+                        className={`calendar-todo-quick calendar-to-buy-quick${activeToBuyId === item.id ? " is-dragging" : ""}`}
+                        type="button"
+                        key={item.id}
+                        style={{ top: layout.top, left: dayColumnLeft(layout.dayIndex) }}
+                        onPointerDown={(event) => startScheduledToBuyDrag(event, item)}
+                        onPointerMove={moveScheduledToBuyDrag}
+                        onPointerUp={endScheduledToBuyDrag}
+                        onPointerCancel={cancelScheduledToBuyDrag}
+                        onContextMenu={(event) => openToBuyContextMenu(event, item)}
+                        aria-label={`${item.title}, to-buy item at ${formatToBuyTime(item)}. Drag to reschedule or right-click for actions.`}
+                      >
+                        <ShoppingBag size={12} />
+                        <strong>{item.title}</strong>
+                        <span>{formatToBuyTime(item)}</span>
+                      </button>
+                    );
+                  })}
                 </div>
 
                 {showCurrentTime && (
@@ -1549,7 +1853,7 @@ export function WeekCalendar() {
                   ><span /></div>
                 )}
 
-                {!loading && !todosLoading && !loadError && events.length === 0 && scheduledTodos.length === 0 && (
+                {!loading && !todosLoading && !toBuyLoading && !loadError && events.length === 0 && scheduledTodos.length === 0 && scheduledToBuyItems.length === 0 && (
                   <button className="empty-calendar-hint" type="button" onClick={() => openCreate()}>
                     <span><Plus size={18} /></span>
                     <strong>Shape your first block</strong>
@@ -1557,7 +1861,7 @@ export function WeekCalendar() {
                   </button>
                 )}
 
-                {(loading || todosLoading) && <div className="calendar-loading"><span /> Loading your week</div>}
+                {(loading || todosLoading || toBuyLoading) && <div className="calendar-loading"><span /> Loading your week</div>}
               </div>
             </div>
           </div>
@@ -1567,6 +1871,7 @@ export function WeekCalendar() {
       <TodoBacklog
         open={backlogOpen}
         todos={backlogTodos}
+        toBuyItems={toBuyItems}
         onClose={() => setBacklogOpen(false)}
         onCreate={() => setTodoEditor({ mode: "create" })}
         onEdit={(todo) => setTodoEditor({ mode: "edit", todo })}
@@ -1576,6 +1881,14 @@ export function WeekCalendar() {
         onDragMove={moveBacklogTodoDrag}
         onDragEnd={endBacklogTodoDrag}
         onDragCancel={cancelBacklogTodoDrag}
+        onCreateToBuy={() => setToBuyEditor({ mode: "create" })}
+        onEditToBuy={(item) => setToBuyEditor({ mode: "edit", item })}
+        onMoveToBuy={(index, offset) => void reorderToBuyItems(index, offset)}
+        onScheduleToBuy={setToBuyScheduleEditor}
+        onStartToBuyDrag={startToBuyDrag}
+        onToBuyDragMove={moveToBuyDrag}
+        onToBuyDragEnd={endToBuyDrag}
+        onToBuyDragCancel={cancelToBuyDrag}
       />
 
       {backlogTodoGhost && (
@@ -1589,6 +1902,17 @@ export function WeekCalendar() {
         </div>
       )}
 
+      {toBuyGhost && (
+        <div
+          className={`todo-drag-ghost to-buy-drag-ghost${toBuyGhost.overCalendar ? " is-over-calendar" : ""}`}
+          style={{ left: toBuyGhost.x, top: toBuyGhost.y }}
+          aria-hidden="true"
+        >
+          <ShoppingBag size={15} />
+          <span>{toBuyGhost.item.title}</span>
+        </div>
+      )}
+
       {notice && <div className="toast" role="status"><Check size={15} /> {notice}</div>}
 
       {contextMenu && (
@@ -1599,6 +1923,8 @@ export function WeekCalendar() {
             ? "Event actions"
             : contextMenu.kind === "todo"
               ? "To-do actions"
+            : contextMenu.kind === "to-buy"
+              ? "To-buy actions"
             : contextMenu.kind === "selection"
               ? "Selected event actions"
               : "Calendar actions"}
@@ -1606,7 +1932,42 @@ export function WeekCalendar() {
           onContextMenu={(mouseEvent) => mouseEvent.preventDefault()}
           onClick={(mouseEvent) => mouseEvent.stopPropagation()}
         >
-          {contextMenu.kind === "todo" ? (
+          {contextMenu.kind === "to-buy" ? (
+            <>
+              <button type="button" role="menuitem" onClick={() => {
+                setToBuyEditor({ mode: "edit", item: contextMenu.item });
+                setContextMenu(null);
+              }}>
+                <Pencil size={15} />
+                <span>Edit to-buy item</span>
+              </button>
+              {contextMenu.item.url && (
+                <button type="button" role="menuitem" onClick={() => {
+                  window.open(contextMenu.item.url ?? "", "_blank", "noopener,noreferrer");
+                  setContextMenu(null);
+                }}>
+                  <ExternalLink size={15} />
+                  <span>Open purchase link</span>
+                </button>
+              )}
+              <button type="button" role="menuitem" onClick={() => {
+                const item = contextMenu.item;
+                setContextMenu(null);
+                void returnToBuyItemToList(item).catch((error) => setNotice(readError(error)));
+              }}>
+                <Undo2 size={15} />
+                <span>Return to To buy</span>
+              </button>
+              <button className="is-danger" type="button" role="menuitem" onClick={() => {
+                const item = contextMenu.item;
+                setContextMenu(null);
+                void deleteToBuyItem(item).catch((error) => setNotice(readError(error)));
+              }}>
+                <Trash2 size={15} />
+                <span>Delete item</span>
+              </button>
+            </>
+          ) : contextMenu.kind === "todo" ? (
             <>
               <button type="button" role="menuitem" onClick={() => {
                 setTodoEditor({ mode: "edit", todo: contextMenu.todo });
@@ -1713,6 +2074,35 @@ export function WeekCalendar() {
           onSchedule={async (scheduledAt) => {
             await scheduleTodo(todoScheduleEditor, scheduledAt);
             setTodoScheduleEditor(null);
+          }}
+        />
+      )}
+
+      {toBuyEditor && (
+        <ToBuyDialog
+          key={toBuyEditor.mode === "edit" ? toBuyEditor.item.id : "new-to-buy-item"}
+          editor={toBuyEditor}
+          onClose={() => setToBuyEditor(null)}
+          onSave={saveToBuyItem}
+          onDelete={deleteToBuyItem}
+        />
+      )}
+
+
+      {toBuyScheduleEditor && (
+        <ToBuyScheduleDialog
+          key={toBuyScheduleEditor.id}
+          item={toBuyScheduleEditor}
+          initialDate={dateKey(isDateInWeek(new Date(), days) ? new Date() : days[0])}
+          initialTime={minutesToInput(clamp(
+            Math.ceil(minutesOfDay(new Date()) / SLOT_MINUTES) * SLOT_MINUTES,
+            DAY_START,
+            DAY_END - SLOT_MINUTES
+          ))}
+          onClose={() => setToBuyScheduleEditor(null)}
+          onSchedule={async (scheduledAt) => {
+            await scheduleToBuyItem(toBuyScheduleEditor, scheduledAt);
+            setToBuyScheduleEditor(null);
           }}
         />
       )}
@@ -2352,6 +2742,17 @@ function todoCalendarLayout(todo: CalendarTodo, days: Date[]) {
   };
 }
 
+function toBuyCalendarLayout(item: CalendarToBuyItem, days: Date[]) {
+  if (!item.scheduledAt) return null;
+  const start = new Date(item.scheduledAt);
+  const dayIndex = days.findIndex((day) => dateKey(day) === dateKey(start));
+  if (dayIndex < 0) return null;
+  return {
+    dayIndex,
+    top: `${((minutesOfDay(start) - DAY_START) / TOTAL_MINUTES) * 100}%`
+  };
+}
+
 function dayColumnLeft(dayIndex: number) {
   return `calc((100% / 7) * ${dayIndex} + 5px)`;
 }
@@ -2463,6 +2864,11 @@ function formatTodoTime(todo: CalendarTodo) {
   const start = new Date(todo.scheduledAt);
   if (todo.estimatedMinutes === null) return formatter.format(start);
   return `${formatter.format(start)} – ${formatter.format(new Date(start.getTime() + todo.estimatedMinutes * 60_000))}`;
+}
+
+function formatToBuyTime(item: CalendarToBuyItem) {
+  if (!item.scheduledAt) return "Unscheduled";
+  return new Intl.DateTimeFormat("en", { hour: "numeric", minute: "2-digit" }).format(new Date(item.scheduledAt));
 }
 
 function formatRecurrenceForAria(event: CalendarEvent) {
@@ -2593,6 +2999,10 @@ function compareEvents(left: CalendarEvent, right: CalendarEvent) {
 }
 
 function compareTodos(left: CalendarTodo, right: CalendarTodo) {
+  return new Date(left.scheduledAt ?? 0).getTime() - new Date(right.scheduledAt ?? 0).getTime();
+}
+
+function compareToBuyItems(left: CalendarToBuyItem, right: CalendarToBuyItem) {
   return new Date(left.scheduledAt ?? 0).getTime() - new Date(right.scheduledAt ?? 0).getTime();
 }
 

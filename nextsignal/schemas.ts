@@ -151,6 +151,44 @@ export const updateTodoInputSchema = z.discriminatedUnion("action", [
 ]);
 
 export const deleteTodoInputSchema = z.object({ id: z.uuid() });
+
+const toBuyFields = {
+  title: z.string().trim().min(1, "Give the item a name.").max(120),
+  description: z.string().trim().max(500).default(""),
+  url: z.union([
+    z.url("Enter a complete link, including https://")
+      .max(2_000)
+      .refine((url) => /^https?:\/\//i.test(url), "The purchase link must begin with https:// or http://."),
+    z.literal("")
+  ]).transform((url) => url || null).nullable().default(null)
+};
+
+export const listToBuyItemsInputSchema = z.object({
+  weekStart: z.iso.datetime({ offset: true }),
+  weekEnd: z.iso.datetime({ offset: true })
+});
+export const createToBuyItemInputSchema = z.object(toBuyFields);
+export const updateToBuyItemInputSchema = z.discriminatedUnion("action", [
+  z.object({
+    action: z.literal("update"),
+    id: z.uuid(),
+    ...toBuyFields
+  }),
+  z.object({
+    action: z.literal("reorder"),
+    orderedIds: z.array(z.uuid()).max(500)
+  }),
+  z.object({
+    action: z.literal("schedule"),
+    id: z.uuid(),
+    scheduledAt: z.iso.datetime({ offset: true })
+  }),
+  z.object({
+    action: z.literal("unschedule"),
+    id: z.uuid()
+  })
+]);
+export const deleteToBuyItemInputSchema = z.object({ id: z.uuid() });
 export const notificationSyncInputSchema = z.object({});
 
 export type EventColor = z.infer<typeof eventColorSchema>;
@@ -163,4 +201,8 @@ export type ListTodosInput = z.infer<typeof listTodosInputSchema>;
 export type CreateTodoInput = z.infer<typeof createTodoInputSchema>;
 export type UpdateTodoInput = z.infer<typeof updateTodoInputSchema>;
 export type DeleteTodoInput = z.infer<typeof deleteTodoInputSchema>;
+export type ListToBuyItemsInput = z.infer<typeof listToBuyItemsInputSchema>;
+export type CreateToBuyItemInput = z.infer<typeof createToBuyItemInputSchema>;
+export type UpdateToBuyItemInput = z.infer<typeof updateToBuyItemInputSchema>;
+export type DeleteToBuyItemInput = z.infer<typeof deleteToBuyItemInputSchema>;
 export type NotificationSyncInput = z.infer<typeof notificationSyncInputSchema>;
