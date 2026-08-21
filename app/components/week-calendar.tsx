@@ -27,6 +27,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type CSSProperties,
   type FormEvent,
   type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent
@@ -139,7 +140,7 @@ type CalendarContextMenu = {
   kind: "calendar";
   x: number;
   y: number;
-  dayIndex: number;
+  date: string;
   startMinutes: number;
 };
 
@@ -298,6 +299,8 @@ export function WeekCalendar() {
   const [bulkDelete, setBulkDelete] = useState<BulkDelete | null>(null);
   const [sleepHours, setSleepHours] = useState<SleepHours | null>(null);
   const [sleepEditorOpen, setSleepEditorOpen] = useState(false);
+  const [isMobileView, setIsMobileView] = useState(false);
+  const [mobileDayIndex, setMobileDayIndex] = useState(() => dayIndexInWeek(new Date()));
   const [now, setNow] = useState(() => new Date());
   const calendarScrollerRef = useRef<HTMLDivElement>(null);
   const calendarCanvasRef = useRef<HTMLDivElement>(null);
@@ -316,6 +319,11 @@ export function WeekCalendar() {
 
   const weekStart = useMemo(() => parseDateKey(weekStartKey), [weekStartKey]);
   const days = useMemo(() => Array.from({ length: 7 }, (_, index) => addDays(weekStart, index)), [weekStart]);
+  const visibleDays = useMemo(
+    () => isMobileView ? [days[mobileDayIndex] ?? days[0]] : days,
+    [days, isMobileView, mobileDayIndex]
+  );
+  const visibleDayCount = visibleDays.length;
   const hours = useMemo(() => Array.from({ length: (DAY_END - DAY_START) / 60 + 1 }, (_, index) => DAY_START + index * 60), []);
 
   const loadEvents = useCallback(async () => {
@@ -397,6 +405,14 @@ export function WeekCalendar() {
   useEffect(() => {
     const timer = window.setInterval(() => setNow(new Date()), 60_000);
     return () => window.clearInterval(timer);
+  }, []);
+
+  useEffect(() => {
+    const media = window.matchMedia("(max-width: 760px)");
+    const update = () => setIsMobileView(media.matches);
+    update();
+    media.addEventListener("change", update);
+    return () => media.removeEventListener("change", update);
   }, []);
 
   useEffect(() => {
@@ -488,6 +504,22 @@ export function WeekCalendar() {
 
   function goToToday() {
     setWeekStartKey(dateKey(startOfWeek(new Date())));
+    setMobileDayIndex(dayIndexInWeek(new Date()));
+  }
+
+  function changeMobileDay(offset: -1 | 1) {
+    const nextIndex = mobileDayIndex + offset;
+    if (nextIndex < 0) {
+      setMobileDayIndex(6);
+      setWeekStartKey(dateKey(addDays(weekStart, -7)));
+      return;
+    }
+    if (nextIndex > 6) {
+      setMobileDayIndex(0);
+      setWeekStartKey(dateKey(addDays(weekStart, 7)));
+      return;
+    }
+    setMobileDayIndex(nextIndex);
   }
 
   function applyPendingScopeChange(scope: RecurringEventScope) {
@@ -601,6 +633,7 @@ export function WeekCalendar() {
       body: JSON.stringify({ action: "schedule", id: item.id, scheduledAt: scheduledAt.toISOString() })
     });
     const updated = data.items[0];
+    if (isMobileView) setMobileDayIndex(dayIndexInWeek(scheduledAt));
     setToBuyItems((current) => current.filter((currentItem) => currentItem.id !== updated.id));
     const scheduledWeek = dateKey(startOfWeek(scheduledAt));
     if (scheduledWeek !== weekStartKey) {
@@ -670,6 +703,7 @@ export function WeekCalendar() {
       body: JSON.stringify({ action: "schedule", id: todo.id, scheduledAt: scheduledAt.toISOString() })
     });
     const updated = data.todos[0];
+    if (isMobileView) setMobileDayIndex(dayIndexInWeek(scheduledAt));
     setBacklogTodos((current) => current.filter((item) => item.id !== updated.id));
     const scheduledWeek = dateKey(startOfWeek(scheduledAt));
     if (scheduledWeek !== weekStartKey) {
@@ -733,15 +767,15 @@ export function WeekCalendar() {
       || pointerEvent.clientY > rect.bottom
     ) return;
 
-    const dayWidth = (rect.width - TIME_GUTTER) / 7;
-    const dayIndex = clamp(Math.floor(contentX / dayWidth), 0, 6);
+    const dayWidth = (rect.width - TIME_GUTTER) / visibleDayCount;
+    const dayIndex = clamp(Math.floor(contentX / dayWidth), 0, visibleDayCount - 1);
     const duration = drag.todo.estimatedMinutes ?? 0;
     const startMinutes = clamp(
       snapMinutes(DAY_START + ((pointerEvent.clientY - rect.top) / rect.height) * TOTAL_MINUTES),
       DAY_START,
       DAY_END - Math.max(SLOT_MINUTES, duration)
     );
-    void scheduleTodo(drag.todo, localDateAtMinutes(days[dayIndex], startMinutes)).catch((error) => {
+    void scheduleTodo(drag.todo, localDateAtMinutes(visibleDays[dayIndex], startMinutes)).catch((error) => {
       setNotice(readError(error));
     });
   }
@@ -785,14 +819,14 @@ export function WeekCalendar() {
       || pointerEvent.clientY < rect.top
       || pointerEvent.clientY > rect.bottom
     ) return;
-    const dayWidth = (rect.width - TIME_GUTTER) / 7;
-    const dayIndex = clamp(Math.floor(contentX / dayWidth), 0, 6);
+    const dayWidth = (rect.width - TIME_GUTTER) / visibleDayCount;
+    const dayIndex = clamp(Math.floor(contentX / dayWidth), 0, visibleDayCount - 1);
     const startMinutes = clamp(
       snapMinutes(DAY_START + ((pointerEvent.clientY - rect.top) / rect.height) * TOTAL_MINUTES),
       DAY_START,
       DAY_END - SLOT_MINUTES
     );
-    void scheduleToBuyItem(drag.item, localDateAtMinutes(days[dayIndex], startMinutes)).catch((error) => {
+    void scheduleToBuyItem(drag.item, localDateAtMinutes(visibleDays[dayIndex], startMinutes)).catch((error) => {
       setNotice(readError(error));
     });
   }
@@ -846,11 +880,11 @@ export function WeekCalendar() {
       return;
     }
 
-    const dayWidth = (rect.width - TIME_GUTTER) / 7;
+    const dayWidth = (rect.width - TIME_GUTTER) / visibleDayCount;
     const dayIndex = clamp(
       Math.floor((pointerEvent.clientX - rect.left - TIME_GUTTER) / dayWidth),
       0,
-      6
+      visibleDayCount - 1
     );
     const pointerTop = pointerEvent.clientY - rect.top - drag.grabOffsetY;
     const duration = drag.current.estimatedMinutes ?? 0;
@@ -861,7 +895,7 @@ export function WeekCalendar() {
     );
     const current = {
       ...drag.current,
-      scheduledAt: localDateAtMinutes(days[dayIndex], startMinutes).toISOString()
+      scheduledAt: localDateAtMinutes(visibleDays[dayIndex], startMinutes).toISOString()
     };
     scheduledTodoDragRef.current = { ...drag, current, moved: true };
     setScheduledTodos((todos) => todos.map((todo) => todo.id === current.id ? current : todo));
@@ -926,14 +960,14 @@ export function WeekCalendar() {
     if (!drag || !timeline || drag.pointerId !== pointerEvent.pointerId) return;
     if (!drag.moved && Math.hypot(pointerEvent.clientX - drag.startClientX, pointerEvent.clientY - drag.startClientY) < 3) return;
     const rect = timeline.getBoundingClientRect();
-    const dayWidth = (rect.width - TIME_GUTTER) / 7;
-    const dayIndex = clamp(Math.floor((pointerEvent.clientX - rect.left - TIME_GUTTER) / dayWidth), 0, 6);
+    const dayWidth = (rect.width - TIME_GUTTER) / visibleDayCount;
+    const dayIndex = clamp(Math.floor((pointerEvent.clientX - rect.left - TIME_GUTTER) / dayWidth), 0, visibleDayCount - 1);
     const startMinutes = clamp(
       snapMinutes(DAY_START + ((pointerEvent.clientY - rect.top) / rect.height) * TOTAL_MINUTES),
       DAY_START,
       DAY_END - SLOT_MINUTES
     );
-    const current = { ...drag.current, scheduledAt: localDateAtMinutes(days[dayIndex], startMinutes).toISOString() };
+    const current = { ...drag.current, scheduledAt: localDateAtMinutes(visibleDays[dayIndex], startMinutes).toISOString() };
     scheduledToBuyDragRef.current = { ...drag, current, moved: true };
     setScheduledToBuyItems((items) => items.map((item) => item.id === current.id ? current : item));
     pointerEvent.preventDefault();
@@ -966,7 +1000,7 @@ export function WeekCalendar() {
   }
 
   function openCreate(
-    date = dateKey(isDateInWeek(new Date(), days) ? new Date() : days[0]),
+    date = dateKey(isMobileView ? visibleDays[0] : isDateInWeek(new Date(), days) ? new Date() : days[0]),
     startMinutes?: number
   ) {
     setEditor({ mode: "create", date, startMinutes });
@@ -978,6 +1012,7 @@ export function WeekCalendar() {
       headers: { "content-type": "application/json" },
       body: JSON.stringify(input)
     });
+    if (isMobileView) setMobileDayIndex(dayIndexInWeek(new Date(data.event.startsAt)));
     const createdWeek = dateKey(startOfWeek(new Date(data.event.startsAt)));
     if (createdWeek !== weekStartKey) {
       setWeekStartKey(createdWeek);
@@ -1071,8 +1106,8 @@ export function WeekCalendar() {
       return;
     }
 
-    const dayWidth = (rect.width - TIME_GUTTER) / 7;
-    const dayIndex = clamp(Math.floor(contentX / dayWidth), 0, 6);
+    const dayWidth = (rect.width - TIME_GUTTER) / visibleDayCount;
+    const dayIndex = clamp(Math.floor(contentX / dayWidth), 0, visibleDayCount - 1);
     const startMinutes = clamp(
       snapMinutes(DAY_START + ((mouseEvent.clientY - rect.top) / rect.height) * TOTAL_MINUTES),
       DAY_START,
@@ -1081,14 +1116,14 @@ export function WeekCalendar() {
     setContextMenu({
       kind: "calendar",
       ...contextMenuPosition(mouseEvent.clientX, mouseEvent.clientY, eventClipboard ? 88 : 50),
-      dayIndex,
+      date: dateKey(visibleDays[dayIndex]),
       startMinutes
     });
   }
 
   function addEventFromContextMenu(menu: CalendarContextMenu) {
     setContextMenu(null);
-    openCreate(dateKey(days[menu.dayIndex]), menu.startMinutes);
+    openCreate(menu.date, menu.startMinutes);
   }
 
   function copyEventOccurrence(event: CalendarEvent) {
@@ -1182,7 +1217,7 @@ export function WeekCalendar() {
       DAY_START,
       DAY_END - eventClipboard.durationMinutes
     );
-    const startsAt = localDateAtMinutes(days[menu.dayIndex], startMinutes);
+    const startsAt = localDateAtMinutes(parseDateKey(menu.date), startMinutes);
     const endsAt = new Date(startsAt.getTime() + eventClipboard.durationMinutes * 60_000);
     if (
       eventClipboard.notificationEnabled
@@ -1431,8 +1466,13 @@ export function WeekCalendar() {
       };
       currentEvents = [updated];
     } else {
-      const dayWidth = (rect.width - TIME_GUTTER) / 7;
-      const desiredDayIndex = clamp(Math.floor((pointerEvent.clientX - rect.left - TIME_GUTTER) / dayWidth), 0, 6);
+      const dayWidth = (rect.width - TIME_GUTTER) / visibleDayCount;
+      const desiredVisibleDayIndex = clamp(
+        Math.floor((pointerEvent.clientX - rect.left - TIME_GUTTER) / dayWidth),
+        0,
+        visibleDayCount - 1
+      );
+      const desiredDayIndex = days.findIndex((day) => dateKey(day) === dateKey(visibleDays[desiredVisibleDayIndex]));
       const originalDayIndexes = drag.originals.map((item) => days.findIndex((day) => dateKey(day) === dateKey(new Date(item.startsAt))));
       const anchorDayIndex = days.findIndex((day) => dateKey(day) === dateKey(originalStart));
       const dayDelta = clamp(
@@ -1474,7 +1514,7 @@ export function WeekCalendar() {
         const currentByKey = new Map(liveDrag.currentEvents.map((item) => [item.occurrenceKey, item]));
         timeline.querySelectorAll<HTMLElement>(".calendar-event").forEach((card) => {
           const current = card.dataset.eventKey ? currentByKey.get(card.dataset.eventKey) : undefined;
-          if (current) applyEventCardLayout(card, current, days);
+          if (current) applyEventCardLayout(card, current, visibleDays);
         });
       });
     }
@@ -1573,7 +1613,7 @@ export function WeekCalendar() {
 
   const todayKey = dateKey(now);
   const currentMinutes = minutesOfDay(now);
-  const showCurrentTime = days.some((day) => dateKey(day) === todayKey) && currentMinutes >= DAY_START && currentMinutes <= DAY_END;
+  const showCurrentTime = visibleDays.some((day) => dateKey(day) === todayKey) && currentMinutes >= DAY_START && currentMinutes <= DAY_END;
 
   return (
     <main className="schedule-shell">
@@ -1624,10 +1664,10 @@ export function WeekCalendar() {
         </div>
 
         <div className="topbar-actions">
-          <button className="logout-button" type="button" onClick={() => void logout()}>
+          <button className="logout-button" type="button" aria-label="Log out" onClick={() => void logout()}>
             <LogOut size={14} /> <span>Log out</span>
           </button>
-          <button className="primary-button" type="button" onClick={() => openCreate()}>
+          <button className="primary-button" type="button" aria-label="Add event" onClick={() => openCreate()}>
             <Plus size={16} strokeWidth={2.6} /> <span>Event</span>
           </button>
         </div>
@@ -1646,22 +1686,36 @@ export function WeekCalendar() {
           </div>
         )}
 
+        <div className="mobile-day-navigation" aria-label="Day navigation">
+          <button type="button" aria-label="Previous day" onClick={() => changeMobileDay(-1)}><ChevronLeft size={19} /></button>
+          <div aria-live="polite">
+            <span>{formatMobileDayName(visibleDays[0])}</span>
+            <strong>{formatMobileDayDate(visibleDays[0])}</strong>
+          </div>
+          <button type="button" aria-label="Next day" onClick={() => changeMobileDay(1)}><ChevronRight size={19} /></button>
+        </div>
+
         <div className="calendar-frame">
           <div ref={calendarScrollerRef} className="calendar-scroller" role="region" aria-label="Calendar hours" tabIndex={0}>
-            <div ref={calendarCanvasRef} className="calendar-canvas">
+            <div
+              ref={calendarCanvasRef}
+              className="calendar-canvas"
+              style={{ "--visible-day-count": visibleDayCount } as CSSProperties}
+            >
               <div className="days-header">
                 <div className="timezone-label">Local</div>
-                {days.map((day, index) => {
+                {visibleDays.map((day) => {
                   const isToday = dateKey(day) === todayKey;
+                  const weekdayIndex = dayIndexInWeek(day);
                   return (
                     <button
                       className={`day-heading${isToday ? " is-today" : ""}`}
                       type="button"
                       key={dateKey(day)}
                       onClick={() => openCreate(dateKey(day))}
-                      aria-label={`Add event on ${DAY_NAMES[index]}`}
+                      aria-label={`Add event on ${DAY_NAMES[weekdayIndex]}`}
                     >
-                      <span>{DAY_NAMES[index].slice(0, 3)}</span>
+                      <span>{DAY_NAMES[weekdayIndex].slice(0, 3)}</span>
                       <strong>{day.getDate()}</strong>
                     </button>
                   );
@@ -1690,7 +1744,7 @@ export function WeekCalendar() {
                 </div>
 
                 <div className="day-columns" aria-hidden="true">
-                  {days.map((day) => (
+                  {visibleDays.map((day) => (
                     <div className={`calendar-day${dateKey(day) === todayKey ? " is-today" : ""}`} key={dateKey(day)}>
                       {sleepHours && sleepHourSegments(sleepHours).map((segment) => (
                         <span
@@ -1716,7 +1770,7 @@ export function WeekCalendar() {
 
                 <div className="events-layer">
                   {events.map((event) => {
-                    const layout = eventCardLayout(event, days);
+                    const layout = eventCardLayout(event, visibleDays);
                     if (!layout) return null;
                     const isSelected = selectedEventKeys.has(event.occurrenceKey);
                     const notificationState = displayedNotificationState(event, now);
@@ -1728,7 +1782,7 @@ export function WeekCalendar() {
                         className={`calendar-event event-${event.color}${activeEventKey === event.occurrenceKey ? " is-dragging" : ""}${isSelected ? " is-selected" : ""}${layout.compact ? " is-compact" : ""}`}
                         data-event-key={event.occurrenceKey}
                         aria-pressed={isSelected}
-                        style={{ top: layout.top, height: layout.height, left: dayColumnLeft(layout.dayIndex) }}
+                        style={{ top: layout.top, height: layout.height, left: dayColumnLeft(layout.dayIndex, visibleDayCount) }}
                         onPointerDown={(pointerEvent) => startDrag(pointerEvent, event, "move")}
                         onPointerMove={moveDrag}
                         onPointerUp={endDrag}
@@ -1762,7 +1816,7 @@ export function WeekCalendar() {
                   })}
 
                   {scheduledTodos.map((todo) => {
-                    const layout = todoCalendarLayout(todo, days);
+                    const layout = todoCalendarLayout(todo, visibleDays);
                     if (!layout) return null;
                     const isDragging = activeTodoId === todo.id;
 
@@ -1772,7 +1826,7 @@ export function WeekCalendar() {
                           className={`calendar-todo-quick${isDragging ? " is-dragging" : ""}`}
                           type="button"
                           key={todo.id}
-                          style={{ top: layout.top, left: dayColumnLeft(layout.dayIndex) }}
+                          style={{ top: layout.top, left: dayColumnLeft(layout.dayIndex, visibleDayCount) }}
                           onPointerDown={(event) => startScheduledTodoDrag(event, todo)}
                           onPointerMove={moveScheduledTodoDrag}
                           onPointerUp={endScheduledTodoDrag}
@@ -1792,7 +1846,7 @@ export function WeekCalendar() {
                         className={`calendar-event calendar-todo-timed${isDragging ? " is-dragging" : ""}${layout.compact ? " is-compact" : ""}`}
                         type="button"
                         key={todo.id}
-                        style={{ top: layout.top, height: layout.height, left: dayColumnLeft(layout.dayIndex) }}
+                        style={{ top: layout.top, height: layout.height, left: dayColumnLeft(layout.dayIndex, visibleDayCount) }}
                         onPointerDown={(event) => startScheduledTodoDrag(event, todo)}
                         onPointerMove={moveScheduledTodoDrag}
                         onPointerUp={endScheduledTodoDrag}
@@ -1818,14 +1872,14 @@ export function WeekCalendar() {
                   })}
 
                   {scheduledToBuyItems.map((item) => {
-                    const layout = toBuyCalendarLayout(item, days);
+                    const layout = toBuyCalendarLayout(item, visibleDays);
                     if (!layout) return null;
                     return (
                       <button
                         className={`calendar-todo-quick calendar-to-buy-quick${activeToBuyId === item.id ? " is-dragging" : ""}`}
                         type="button"
                         key={item.id}
-                        style={{ top: layout.top, left: dayColumnLeft(layout.dayIndex) }}
+                        style={{ top: layout.top, left: dayColumnLeft(layout.dayIndex, visibleDayCount) }}
                         onPointerDown={(event) => startScheduledToBuyDrag(event, item)}
                         onPointerMove={moveScheduledToBuyDrag}
                         onPointerUp={endScheduledToBuyDrag}
@@ -1846,8 +1900,8 @@ export function WeekCalendar() {
                     className="current-time-line"
                     style={{
                       top: `${((currentMinutes - DAY_START) / TOTAL_MINUTES) * 100}%`,
-                      left: `calc(${TIME_GUTTER}px + ((100% - ${TIME_GUTTER}px) / 7) * ${days.findIndex((day) => dateKey(day) === todayKey)})`,
-                      width: `calc((100% - ${TIME_GUTTER}px) / 7)`
+                      left: `calc(${TIME_GUTTER}px + ((100% - ${TIME_GUTTER}px) / ${visibleDayCount}) * ${visibleDays.findIndex((day) => dateKey(day) === todayKey)})`,
+                      width: `calc((100% - ${TIME_GUTTER}px) / ${visibleDayCount})`
                     }}
                     aria-hidden="true"
                   ><span /></div>
@@ -2753,8 +2807,8 @@ function toBuyCalendarLayout(item: CalendarToBuyItem, days: Date[]) {
   };
 }
 
-function dayColumnLeft(dayIndex: number) {
-  return `calc((100% / 7) * ${dayIndex} + 5px)`;
+function dayColumnLeft(dayIndex: number, dayCount: number) {
+  return `calc((100% / ${dayCount}) * ${dayIndex} + 5px)`;
 }
 
 function calendarEndMinutes(start: Date, end: Date) {
@@ -2791,7 +2845,7 @@ function applyEventCardLayout(card: HTMLElement, event: CalendarEvent, days: Dat
   const layout = eventCardLayout(event, days);
   if (!layout) return;
 
-  card.style.left = dayColumnLeft(layout.dayIndex);
+  card.style.left = dayColumnLeft(layout.dayIndex, days.length);
   card.style.top = layout.top;
   card.style.height = layout.height;
   card.classList.toggle("is-compact", layout.compact);
@@ -2806,6 +2860,10 @@ function startOfWeek(date: Date) {
   const day = result.getDay();
   result.setDate(result.getDate() - (day === 0 ? 6 : day - 1));
   return result;
+}
+
+function dayIndexInWeek(date: Date) {
+  return date.getDay() === 0 ? 6 : date.getDay() - 1;
 }
 
 function addDays(date: Date, amount: number) {
@@ -2935,6 +2993,14 @@ function formatCompactWeekRange(start: Date, end: Date) {
     return `${month(start)} ${start.getDate()}–${month(end)} ${end.getDate()} ’${endYear}`;
   }
   return `${month(start)} ${start.getDate()} ’${startYear}–${month(end)} ${end.getDate()} ’${endYear}`;
+}
+
+function formatMobileDayName(date: Date) {
+  return new Intl.DateTimeFormat("en", { weekday: "long" }).format(date);
+}
+
+function formatMobileDayDate(date: Date) {
+  return new Intl.DateTimeFormat("en", { month: "short", day: "numeric", year: "numeric" }).format(date);
 }
 
 function isDateInWeek(date: Date, days: Date[]) {

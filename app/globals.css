@@ -14,6 +14,7 @@
   --calendar-hours: 24;
   --calendar-slots: 96;
   --toolbar-control-height: 34px;
+  --visible-day-count: 7;
 }
 
 * {
@@ -466,6 +467,10 @@ button {
   box-shadow: none;
 }
 
+.mobile-day-navigation {
+  display: none;
+}
+
 .calendar-scroller {
   flex: 1;
   height: 100%;
@@ -505,7 +510,7 @@ button {
   flex: 0 0 var(--day-header-height);
   height: var(--day-header-height);
   display: grid;
-  grid-template-columns: var(--time-gutter) repeat(7, minmax(0, 1fr));
+  grid-template-columns: var(--time-gutter) repeat(var(--visible-day-count), minmax(0, 1fr));
   position: sticky;
   top: 0;
   z-index: 20;
@@ -606,7 +611,7 @@ button {
   position: absolute;
   inset: 0 0 0 var(--time-gutter);
   display: grid;
-  grid-template-columns: repeat(7, minmax(0, 1fr));
+  grid-template-columns: repeat(var(--visible-day-count), minmax(0, 1fr));
 }
 
 .events-layer {
@@ -618,7 +623,7 @@ button {
 
 .events-layer .calendar-event {
   right: auto;
-  width: calc((100% / 7) - 10px);
+  width: calc((100% / var(--visible-day-count)) - 10px);
   pointer-events: auto;
 }
 
@@ -709,7 +714,7 @@ button {
   position: absolute;
   z-index: 6;
   right: auto;
-  width: calc((100% / 7) - 10px);
+  width: calc((100% / var(--visible-day-count)) - 10px);
   height: 22px;
   display: flex;
   align-items: center;
@@ -2020,6 +2025,66 @@ button {
     padding: 3px 6px 7px;
   }
 
+  .mobile-day-navigation {
+    flex: none;
+    min-height: 42px;
+    margin-bottom: 4px;
+    display: grid;
+    grid-template-columns: 42px minmax(0, 1fr) 42px;
+    align-items: center;
+    border: 1px solid #c9c9c9;
+    border-radius: 8px;
+    background: #f8f8f6;
+  }
+
+  .mobile-day-navigation button {
+    width: 42px;
+    height: 40px;
+    display: grid;
+    place-items: center;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    cursor: pointer;
+  }
+
+  .mobile-day-navigation button:first-child {
+    border-right: 1px solid #deded9;
+  }
+
+  .mobile-day-navigation button:last-child {
+    border-left: 1px solid #deded9;
+  }
+
+  .mobile-day-navigation > div {
+    min-width: 0;
+    display: flex;
+    align-items: baseline;
+    justify-content: center;
+    gap: 6px;
+  }
+
+  .mobile-day-navigation span {
+    color: #59606f;
+    font-size: 11px;
+    font-weight: 700;
+  }
+
+  .mobile-day-navigation strong {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 12px;
+  }
+
+  .calendar-canvas {
+    min-width: 0;
+  }
+
+  .calendar-frame {
+    border-radius: 8px;
+  }
+
   .calendar-toolbar {
     gap: 3px;
   }
@@ -2058,6 +2123,10 @@ button {
     width: 32px;
   }
 
+  .week-arrows {
+    display: none;
+  }
+
   .topbar-actions {
     gap: 3px;
   }
@@ -2080,6 +2149,7 @@ button {
 
   .form-grid {
     grid-template-columns: 1fr 1fr;
+    gap: 7px;
   }
 
   .form-grid .field:first-child {
@@ -2101,7 +2171,11 @@ button {
   }
 
   .event-dialog {
-    padding: 20px;
+    width: 100%;
+    max-height: calc(100dvh - 16px);
+    padding: 14px;
+    border-radius: 14px 14px 9px 9px;
+    overscroll-behavior: contain;
   }
 
   .scope-actions {
@@ -2117,32 +2191,125 @@ button {
   }
 
   .todo-dialog {
-    max-height: calc(100vh - 48px);
+    max-height: calc(100dvh - 16px);
     overflow: auto;
-    padding: 20px;
+    padding: 14px;
+    border-radius: 14px 14px 9px 9px;
+    overscroll-behavior: contain;
   }
 
   .todo-dialog-actions {
-    align-items: stretch;
-    flex-direction: column-reverse;
+    align-items: center;
+    flex-direction: row;
+    gap: 6px;
   }
 
   .todo-dialog-actions > div {
-    display: grid;
+    display: flex;
+    justify-content: flex-end;
+    gap: 6px;
   }
 
   .todo-dialog-actions button {
-    width: 100%;
+    width: auto;
   }
 
   .dialog-actions {
-    align-items: stretch;
-    flex-direction: column-reverse;
+    align-items: center;
+    flex-direction: row;
+    gap: 6px;
   }
 
-  .dialog-actions > div,
-  .dialog-actions button {
-    flex: 1;
+  .dialog-actions > div {
+    flex: none;
+    gap: 6px;
+  }
+
+  .modal-backdrop {
+    padding: 8px;
+    place-items: end center;
+  }
+
+  .scope-dialog {
+    width: 100%;
+    max-height: calc(100dvh - 16px);
+    overflow: auto;
+    padding: 16px;
+    border-radius: 14px 14px 9px 9px;
+    overscroll-behavior: contain;
+  }
+
+  .dialog-header {
+    margin-bottom: 10px;
+  }
+
+  .dialog-header h2,
+  .scope-dialog h2 {
+    font-size: 18px;
+  }
+
+  .field {
+    gap: 4px;
+    margin-bottom: 9px;
+  }
+
+  .field input,
+  .field select {
+    min-height: 38px;
+    padding: 8px 10px;
+  }
+
+  .field textarea {
+    max-height: 66px;
+    padding: 8px 10px;
+  }
+
+  .recurrence-control,
+  .notification-control {
+    min-height: 48px;
+    margin-bottom: 9px;
+    padding: 8px 10px;
+  }
+
+  .notification-settings {
+    margin-top: 8px;
+    padding-top: 8px;
+    gap: 7px;
+  }
+
+  .recurrence-note {
+    margin: -3px 0 9px;
+  }
+
+  .color-field {
+    margin-bottom: 9px;
+  }
+
+  .color-field legend {
+    margin-bottom: 5px;
+  }
+
+  .color-options {
+    gap: 4px;
+  }
+
+  .color-option {
+    padding: 3px 5px 3px 3px;
+  }
+
+  .color-option > span {
+    width: 18px;
+    height: 18px;
+  }
+
+  .dialog-actions,
+  .todo-dialog-actions {
+    position: sticky;
+    z-index: 3;
+    bottom: -14px;
+    margin: 0 -2px -2px;
+    padding: 9px 2px 2px;
+    background: #ffffff;
   }
 }
 
