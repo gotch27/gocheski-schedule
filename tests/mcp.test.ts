@@ -111,6 +111,17 @@ test("HTTP boundary loads config, requires its own bearer token, rejects foreign
     (
       await handleCalendarMcpRequest(
         app,
+        new Request("https://www.gocheski.com/schedule/api/mcp", {
+          headers: { ...headers, host: "www.gocheski.com", origin: "https://www.gocheski.com" }
+        })
+      )
+    ).status,
+    405
+  );
+  assert.equal(
+    (
+      await handleCalendarMcpRequest(
+        app,
         new Request(endpoint, {
           headers: { ...headers, host: "attacker.test" }
         })

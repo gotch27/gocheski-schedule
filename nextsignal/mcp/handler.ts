@@ -25,6 +25,7 @@ export async function handleCalendarMcpRequest(
   const url = new URL(request.url);
   const hosts = app.config.get<string[]>("mcp.allowed_hosts", [
     "gocheski.com",
+    "www.gocheski.com",
     "localhost",
     "127.0.0.1"
   ]);

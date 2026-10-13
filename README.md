@@ -82,7 +82,7 @@ This version uses the same token authentication as `gocheski.com/admin`. It inte
 
 ## Agent access through MCP
 
-The calendar exposes a stateless Streamable HTTP MCP server at **`/schedule/api/mcp`**, within this repository. In production the URL is `https://gocheski.com/schedule/api/mcp`; locally it is `http://localhost:3000/schedule/api/mcp` (use your development server's port).
+The calendar exposes a stateless Streamable HTTP MCP server at **`/schedule/api/mcp`**, within this repository. In production use the canonical URL `https://www.gocheski.com/schedule/api/mcp` directly; locally it is `http://localhost:3000/schedule/api/mcp` (use your development server's port). The bare domain redirects to `www`, which MCP clients may reject as a different origin.
 
 Configure a separate token in `.env.local` or the deployment environment:
 
@@ -129,7 +129,7 @@ Edits accept partial fields and preserve omitted content, reminders, and existin
 
 Reorder tools require all current unscheduled IDs exactly once. To-dos and purchases are scheduled as their own entity types. They have no completed/purchased status or activity-log model in the current app.
 
-Host validation permits `gocheski.com`, `localhost`, and `127.0.0.1`. Requests without an `Origin` header are supported; browser origins must match the endpoint origin or an explicitly configured origin. Additional deployment hosts/origins can be configured through JSON arrays in `NEXTSIGNAL_MCP__ALLOWED_HOSTS` and `NEXTSIGNAL_MCP__ALLOWED_ORIGINS`. This is a POST request/response endpoint with no persistent SSE sessions. It does not enable cross-origin browser access via CORS.
+Host validation permits `gocheski.com`, `www.gocheski.com`, `localhost`, and `127.0.0.1`. Requests without an `Origin` header are supported; browser origins must match the endpoint origin or an explicitly configured origin. Additional deployment hosts/origins can be configured through JSON arrays in `NEXTSIGNAL_MCP__ALLOWED_HOSTS` and `NEXTSIGNAL_MCP__ALLOWED_ORIGINS`. This is a POST request/response endpoint with no persistent SSE sessions. It does not enable cross-origin browser access via CORS.
 
 The thin route lives in `app/api/mcp/route.ts`, transport/authentication helpers in `nextsignal/mcp/`, and authenticated agent processes in `nextsignal/processes/business/agent-calendar.ts`. Database reads remain in services; mutations reuse the existing business processes. No database migration is required.
 
