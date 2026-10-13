@@ -2,9 +2,25 @@ import { z } from "zod";
 import { eventColors } from "@/db/schema";
 
 export const eventColorSchema = z.enum(eventColors);
+export const labelColorSchema = z
+  .string()
+  .regex(/^#[0-9a-fA-F]{6}$/, "Choose a valid color.")
+  .transform((color) => color.toLowerCase() as `#${string}`);
+export const listLabelsInputSchema = z.object({});
+export const createLabelInputSchema = z.object({
+  name: z.string().trim().min(1, "Give the label a name.").max(60),
+  color: labelColorSchema
+});
+export const updateLabelInputSchema = createLabelInputSchema.extend({ id: z.uuid() });
+export const labelIdInputSchema = z.object({ id: z.uuid() });
+export type CreateLabelInput = z.infer<typeof createLabelInputSchema>;
+export type UpdateLabelInput = z.infer<typeof updateLabelInputSchema>;
+export type LabelIdInput = z.infer<typeof labelIdInputSchema>;
 export const recurringEventScopeSchema = z.enum(["series", "occurrence"]);
 
 const eventFields = {
+  labelId: z.uuid().nullable().optional(),
+  goalId: z.uuid().nullable().optional(),
   title: z.string().trim().min(1, "Give the event a title.").max(120),
   description: z.string().trim().max(500).default(""),
   startsAt: z.iso.datetime({ offset: true }),
@@ -13,9 +29,15 @@ const eventFields = {
   recurrenceTimeZone: z.string().trim().min(1).max(100).nullable().default(null),
   recurrenceEndsOn: z.iso.date().nullable().default(null),
   notificationEnabled: z.boolean().default(false),
-  notificationOffsetMinutes: z.number().int().min(0).max(7 * 24 * 60).nullable().default(null),
+  notificationOffsetMinutes: z
+    .number()
+    .int()
+    .min(0)
+    .max(7 * 24 * 60)
+    .nullable()
+    .default(null),
   notificationMessage: z.string().trim().max(500).nullable().default(null),
-  color: eventColorSchema.default("violet")
+  color: z.union([eventColorSchema, labelColorSchema]).default("violet")
 };
 
 type EventFields = {
@@ -48,9 +70,9 @@ function validateEvent(event: EventFields, ctx: z.RefinementCtx) {
   }
 
   if (
-    event.recurrenceIntervalWeeks !== null
-    && event.recurrenceEndsOn !== null
-    && event.recurrenceEndsOn < dateKeyInTimeZone(new Date(event.startsAt), event.recurrenceTimeZone)
+    event.recurrenceIntervalWeeks !== null &&
+    event.recurrenceEndsOn !== null &&
+    event.recurrenceEndsOn < dateKeyInTimeZone(new Date(event.startsAt), event.recurrenceTimeZone)
   ) {
     ctx.addIssue({
       code: "custom",
@@ -89,7 +111,8 @@ function dateKeyInTimeZone(date: Date, timeZone: string | null) {
   }
 
   const parts = Object.fromEntries(
-    formatter.formatToParts(date)
+    formatter
+      .formatToParts(date)
       .filter((part) => part.type !== "literal")
       .map((part) => [part.type, part.value])
   );
@@ -103,12 +126,14 @@ export const listEventsInputSchema = z.object({
 
 export const createEventInputSchema = z.object(eventFields).superRefine(validateEvent);
 
-export const updateEventInputSchema = z.object({
-  id: z.uuid(),
-  occurrenceStartsAt: z.iso.datetime({ offset: true }).optional(),
-  scope: recurringEventScopeSchema.default("series"),
-  ...eventFields
-}).superRefine(validateEvent);
+export const updateEventInputSchema = z
+  .object({
+    id: z.uuid(),
+    occurrenceStartsAt: z.iso.datetime({ offset: true }).optional(),
+    scope: recurringEventScopeSchema.default("series"),
+    ...eventFields
+  })
+  .superRefine(validateEvent);
 
 export const deleteEventInputSchema = z.object({
   id: z.uuid(),
@@ -117,9 +142,16 @@ export const deleteEventInputSchema = z.object({
 });
 
 const todoFields = {
+  goalId: z.uuid().nullable().optional(),
   title: z.string().trim().min(1, "Give the to-do a title.").max(120),
   description: z.string().trim().max(500).default(""),
-  estimatedMinutes: z.number().int().min(15).max(15 * 60).nullable().default(null)
+  estimatedMinutes: z
+    .number()
+    .int()
+    .min(15)
+    .max(15 * 60)
+    .nullable()
+    .default(null)
 };
 
 export const listTodosInputSchema = z.object({
@@ -155,12 +187,20 @@ export const deleteTodoInputSchema = z.object({ id: z.uuid() });
 const toBuyFields = {
   title: z.string().trim().min(1, "Give the item a name.").max(120),
   description: z.string().trim().max(500).default(""),
-  url: z.union([
-    z.url("Enter a complete link, including https://")
-      .max(2_000)
-      .refine((url) => /^https?:\/\//i.test(url), "The purchase link must begin with https:// or http://."),
-    z.literal("")
-  ]).transform((url) => url || null).nullable().default(null)
+  url: z
+    .union([
+      z
+        .url("Enter a complete link, including https://")
+        .max(2_000)
+        .refine(
+          (url) => /^https?:\/\//i.test(url),
+          "The purchase link must begin with https:// or http://."
+        ),
+      z.literal("")
+    ])
+    .transform((url) => url || null)
+    .nullable()
+    .default(null)
 };
 
 export const listToBuyItemsInputSchema = z.object({
@@ -206,3 +246,40 @@ export type CreateToBuyItemInput = z.infer<typeof createToBuyItemInputSchema>;
 export type UpdateToBuyItemInput = z.infer<typeof updateToBuyItemInputSchema>;
 export type DeleteToBuyItemInput = z.infer<typeof deleteToBuyItemInputSchema>;
 export type NotificationSyncInput = z.infer<typeof notificationSyncInputSchema>;
+
+const goalFields = {
+  title: z.string().trim().min(1, "Give the goal a title.").max(120),
+  description: z.string().trim().max(2_000).default(""),
+  startsOn: z.iso.date().nullable().default(null),
+  endsOn: z.iso.date().nullable().default(null),
+  timeZone: z
+    .string()
+    .max(100)
+    .refine((zone) => {
+      try {
+        new Intl.DateTimeFormat("en", { timeZone: zone });
+        return true;
+      } catch {
+        return false;
+      }
+    }, "Choose a valid time zone."),
+  color: eventColorSchema.default("violet"),
+  achieved: z.boolean().default(false)
+};
+const validGoalRange = (goal: { startsOn: string | null; endsOn: string | null }) =>
+  (goal.startsOn === null && goal.endsOn === null) ||
+  (goal.startsOn !== null && goal.endsOn !== null && goal.endsOn >= goal.startsOn);
+const goalRangeError = {
+  message:
+    "Choose both dates, or leave the date range off. The deadline cannot be before the start date.",
+  path: ["endsOn"]
+};
+export const listGoalsInputSchema = z.object({});
+export const createGoalInputSchema = z.object(goalFields).refine(validGoalRange, goalRangeError);
+export const updateGoalInputSchema = z
+  .object({ id: z.uuid(), ...goalFields })
+  .refine(validGoalRange, goalRangeError);
+export const goalIdInputSchema = z.object({ id: z.uuid() });
+export type CreateGoalInput = z.infer<typeof createGoalInputSchema>;
+export type UpdateGoalInput = z.infer<typeof updateGoalInputSchema>;
+export type GoalIdInput = z.infer<typeof goalIdInputSchema>;

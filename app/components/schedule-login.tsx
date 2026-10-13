@@ -4,7 +4,7 @@ import { useState, type FormEvent } from "react";
 
 const LOGIN_API_PATH = "/schedule/api/auth/login";
 
-export function ScheduleLogin() {
+export function ScheduleLogin({ returnTo = "/schedule" }: { returnTo?: "/schedule" | "/schedule/goals" }) {
   const [token, setToken] = useState("");
   const [message, setMessage] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -26,7 +26,7 @@ export function ScheduleLogin() {
         return;
       }
 
-      window.location.replace("/schedule");
+      window.location.replace(returnTo);
     } catch {
       setMessage("Login is unavailable right now. Please try again.");
     } finally {

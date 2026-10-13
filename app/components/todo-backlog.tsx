@@ -1,10 +1,13 @@
 "use client";
 
+import { GoalSelector } from "@/app/components/goal-selector";
+
 import { CalendarPlus, ChevronDown, ChevronUp, Clock3, ExternalLink, GripVertical, Link2, ListTodo, Pencil, Plus, ShoppingBag, Trash2, X } from "lucide-react";
 import { useState, type FormEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { useEscapeKey } from "@/app/hooks/use-escape-key";
 
 export type CalendarTodo = {
+  goalId: string | null;
   id: string;
   title: string;
   description: string;
@@ -15,7 +18,7 @@ export type CalendarTodo = {
   updatedAt: string;
 };
 
-export type TodoInput = Pick<CalendarTodo, "title" | "description" | "estimatedMinutes">;
+export type TodoInput = Pick<CalendarTodo, "goalId" | "title" | "description" | "estimatedMinutes">;
 
 export type CalendarToBuyItem = {
   id: string;
@@ -384,6 +387,7 @@ export function TodoDialog({
   onDelete: (todo: CalendarTodo) => Promise<void>;
 }) {
   const existing = editor.mode === "edit" ? editor.todo : null;
+  const [goalId, setGoalId] = useState<string | null>(existing?.goalId ?? null);
   const [title, setTitle] = useState(existing?.title ?? "");
   const [description, setDescription] = useState(existing?.description ?? "");
   const [kind, setKind] = useState<"quick" | "timed">(existing?.estimatedMinutes === null || !existing ? "quick" : "timed");
@@ -424,6 +428,7 @@ export function TodoDialog({
     setError(null);
     try {
       await onSave({
+        goalId,
         title: title.trim(),
         description: description.trim(),
         estimatedMinutes
@@ -458,6 +463,7 @@ export function TodoDialog({
         </div>
 
         <form onSubmit={submit}>
+          <GoalSelector value={goalId} onChange={setGoalId} />
           <label className="field">
             <span>Title</span>
             <input autoFocus value={title} onChange={(event) => setTitle(event.target.value)} maxLength={120} placeholder="Remind Alex, prepare proposal…" required />

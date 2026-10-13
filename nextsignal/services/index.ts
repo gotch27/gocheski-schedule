@@ -1,3 +1,15 @@
+import {
+  calculateGoalStatistics,
+  goalBounds,
+  type GoalStatistics,
+  type GoalTask
+} from "@/nextsignal/services/goal-statistics";
+import {
+  shiftSeriesAnchor,
+  addWeeksInTimeZone,
+  dateKeyInTimeZone,
+  validTimeZone
+} from "@/nextsignal/services/calendar-time";
 import { createHash } from "node:crypto";
 import { neon } from "@neondatabase/serverless";
 import { and, asc, desc, eq, gt, gte, inArray, isNotNull, isNull, lt, lte, or } from "drizzle-orm";
@@ -6,17 +18,25 @@ import {
   calendarEventExceptions,
   calendarEventNotificationDeliveries,
   calendarEvents,
+  calendarLabels,
+  type CalendarLabelRecord,
+  type CalendarEventColor,
+  calendarGoals,
+  type CalendarGoalRecord,
   calendarToBuyItems,
   calendarTodos,
   type CalendarEventExceptionRecord,
   type CalendarEventRecord,
   type CalendarEventNotificationDeliveryRecord,
   type CalendarToBuyItemRecord,
-  type CalendarTodoRecord,
-  type EventColor
+  type CalendarTodoRecord
 } from "@/db/schema";
 import type {
   CreateEventInput,
+  CreateLabelInput,
+  UpdateLabelInput,
+  CreateGoalInput,
+  UpdateGoalInput,
   CreateToBuyItemInput,
   CreateTodoInput,
   DeleteToBuyItemInput,
@@ -26,7 +46,33 @@ import type {
   UpdateTodoInput
 } from "@/nextsignal/schemas";
 
+export type CalendarGoal = Omit<CalendarGoalRecord, "createdAt" | "updatedAt"> & {
+  createdAt: string;
+  updatedAt: string;
+};
+export type CalendarLabel = Omit<CalendarLabelRecord, "createdAt" | "updatedAt"> & {
+  createdAt: string;
+  updatedAt: string;
+};
+function toCalendarLabel(record: CalendarLabelRecord): CalendarLabel {
+  return {
+    ...record,
+    createdAt: record.createdAt.toISOString(),
+    updatedAt: record.updatedAt.toISOString()
+  };
+}
+export type GoalWithStatistics = CalendarGoal & { statistics: GoalStatistics };
+function toCalendarGoal(record: CalendarGoalRecord): CalendarGoal {
+  return {
+    ...record,
+    createdAt: record.createdAt.toISOString(),
+    updatedAt: record.updatedAt.toISOString()
+  };
+}
+
 export type CalendarEvent = {
+  labelId: string | null;
+  goalId: string | null;
   id: string;
   occurrenceKey: string;
   title: string;
@@ -44,12 +90,13 @@ export type CalendarEvent = {
   recurrenceAnchorStartsAt: string;
   occurrenceStartsAt: string;
   isOccurrenceOverride: boolean;
-  color: EventColor;
+  color: CalendarEventColor;
   createdAt: string;
   updatedAt: string;
 };
 
 export type CalendarTodo = {
+  goalId: string | null;
   id: string;
   title: string;
   description: string;
@@ -198,8 +245,233 @@ async function queueDeliveryCancellations(
 }
 
 export const services = {
+  labels: {
+    async list(connectionString: string): Promise<CalendarLabel[]> {
+      return (
+        await database(connectionString)
+          .select()
+          .from(calendarLabels)
+          .orderBy(asc(calendarLabels.createdAt), asc(calendarLabels.id))
+      ).map(toCalendarLabel);
+    },
+    async find(connectionString: string, id: string): Promise<CalendarLabel | null> {
+      const [record] = await database(connectionString)
+        .select()
+        .from(calendarLabels)
+        .where(eq(calendarLabels.id, id))
+        .limit(1);
+      return record ? toCalendarLabel(record) : null;
+    },
+    async create(connectionString: string, input: CreateLabelInput): Promise<CalendarLabel> {
+      const [record] = await database(connectionString)
+        .insert(calendarLabels)
+        .values(input)
+        .returning();
+      return toCalendarLabel(record);
+    },
+    async update(connectionString: string, input: UpdateLabelInput): Promise<CalendarLabel | null> {
+      const db = database(connectionString);
+      // Keep a color snapshot on events so removing a label preserves their appearance.
+      const [updated] = await db.batch([
+        db
+          .update(calendarLabels)
+          .set({ name: input.name, color: input.color, updatedAt: new Date() })
+          .where(eq(calendarLabels.id, input.id))
+          .returning(),
+        db
+          .update(calendarEvents)
+          .set({ color: input.color })
+          .where(eq(calendarEvents.labelId, input.id)),
+        db
+          .update(calendarEventExceptions)
+          .set({ color: input.color })
+          .where(
+            or(
+              eq(calendarEventExceptions.labelId, input.id),
+              and(
+                eq(calendarEventExceptions.labelIsOverridden, false),
+                inArray(
+                  calendarEventExceptions.eventId,
+                  db
+                    .select({ id: calendarEvents.id })
+                    .from(calendarEvents)
+                    .where(eq(calendarEvents.labelId, input.id))
+                )
+              )
+            )
+          )
+      ]);
+      return updated[0] ? toCalendarLabel(updated[0]) : null;
+    },
+    async delete(connectionString: string, id: string): Promise<boolean> {
+      return (
+        (
+          await database(connectionString)
+            .delete(calendarLabels)
+            .where(eq(calendarLabels.id, id))
+            .returning({ id: calendarLabels.id })
+        ).length > 0
+      );
+    }
+  },
+  goals: {
+    async list(connectionString: string): Promise<CalendarGoal[]> {
+      return (
+        await database(connectionString)
+          .select()
+          .from(calendarGoals)
+          .orderBy(asc(calendarGoals.startsOn), asc(calendarGoals.createdAt))
+      ).map(toCalendarGoal);
+    },
+    async exists(connectionString: string, id: string): Promise<boolean> {
+      return (
+        (
+          await database(connectionString)
+            .select({ id: calendarGoals.id })
+            .from(calendarGoals)
+            .where(eq(calendarGoals.id, id))
+            .limit(1)
+        ).length > 0
+      );
+    },
+    async create(connectionString: string, input: CreateGoalInput): Promise<CalendarGoal> {
+      const [record] = await database(connectionString)
+        .insert(calendarGoals)
+        .values({
+          title: input.title,
+          description: input.description,
+          startsOn: input.startsOn,
+          endsOn: input.endsOn,
+          timeZone: input.timeZone,
+          color: input.color,
+          achieved: input.achieved
+        })
+        .returning();
+      return toCalendarGoal(record);
+    },
+    async update(connectionString: string, input: UpdateGoalInput): Promise<CalendarGoal | null> {
+      const [record] = await database(connectionString)
+        .update(calendarGoals)
+        .set({
+          title: input.title,
+          description: input.description,
+          startsOn: input.startsOn,
+          endsOn: input.endsOn,
+          color: input.color,
+          achieved: input.achieved,
+          updatedAt: new Date()
+        })
+        .where(eq(calendarGoals.id, input.id))
+        .returning();
+      return record ? toCalendarGoal(record) : null;
+    },
+    async delete(connectionString: string, id: string): Promise<boolean> {
+      return (
+        (
+          await database(connectionString)
+            .delete(calendarGoals)
+            .where(eq(calendarGoals.id, id))
+            .returning({ id: calendarGoals.id })
+        ).length > 0
+      );
+    },
+    async statistics(connectionString: string): Promise<GoalWithStatistics[]> {
+      const goals = await services.goals.list(connectionString);
+      if (!goals.length) return [];
+      const db = database(connectionString);
+      const linkedMasters = db
+        .select({ id: calendarEvents.id })
+        .from(calendarEvents)
+        .where(isNotNull(calendarEvents.goalId));
+      const [exceptions, todos] = await Promise.all([
+        db
+          .select()
+          .from(calendarEventExceptions)
+          .where(
+            or(
+              eq(calendarEventExceptions.goalIsOverridden, true),
+              inArray(calendarEventExceptions.eventId, linkedMasters)
+            )
+          ),
+        db.select().from(calendarTodos).where(isNotNull(calendarTodos.goalId))
+      ]);
+      const overriddenIds = [...new Set(exceptions.map((exception) => exception.eventId))];
+      const records = await db
+        .select()
+        .from(calendarEvents)
+        .where(
+          or(
+            isNotNull(calendarEvents.goalId),
+            ...(overriddenIds.length ? [inArray(calendarEvents.id, overriddenIds)] : [])
+          )
+        );
+      const exceptionsByEvent = new Map<string, CalendarEventExceptionRecord[]>();
+      for (const exception of exceptions) {
+        const existing = exceptionsByEvent.get(exception.eventId) ?? [];
+        existing.push(exception);
+        exceptionsByEvent.set(exception.eventId, existing);
+      }
+      const now = new Date();
+      return goals.map((goal) => {
+        const bounds = goalBounds(goal);
+        const horizon = addWeeksInTimeZone(now, 12, goal.timeZone);
+        const candidates = records.filter(
+          (record) =>
+            record.goalId === goal.id ||
+            exceptionsByEvent
+              .get(record.id)
+              ?.some((exception) => exception.goalIsOverridden && exception.goalId === goal.id)
+        );
+        const events = candidates.flatMap((record) => {
+          const seriesExceptions = exceptionsByEvent.get(record.id) ?? [];
+          const start =
+            bounds.start ??
+            new Date(
+              Math.min(
+                record.startsAt.getTime(),
+                ...seriesExceptions.map((exception) =>
+                  (exception.startsAt ?? exception.occurrenceStartsAt).getTime()
+                )
+              )
+            );
+          return occurrencesInRange(record, start, bounds.end ?? horizon, seriesExceptions);
+        });
+        const tasks: GoalTask[] = events
+          .filter(
+            (event) =>
+              event.goalId === goal.id &&
+              (!bounds.start || new Date(event.endsAt) > bounds.start) &&
+              (!bounds.end || new Date(event.startsAt) < bounds.end)
+          )
+          .map((event) => ({
+            id: event.occurrenceKey,
+            kind: "event",
+            title: event.title,
+            startsAt: event.startsAt,
+            endsAt: event.endsAt
+          }));
+        tasks.push(
+          ...todos
+            .filter((todo) => todo.goalId === goal.id)
+            .map((todo): GoalTask => ({
+              id: todo.id,
+              kind: "todo",
+              title: todo.title,
+              startsAt: todo.scheduledAt?.toISOString() ?? null,
+              endsAt:
+                todo.scheduledAt && todo.estimatedMinutes !== null
+                  ? new Date(
+                      todo.scheduledAt.getTime() + todo.estimatedMinutes * 60_000
+                    ).toISOString()
+                  : null
+            }))
+        );
+        return { ...goal, statistics: calculateGoalStatistics(goal, tasks, now) };
+      });
+    }
+  },
   events: {
-    async list(connectionString: string, weekStart: string, weekEnd: string): Promise<CalendarEvent[]> {
+    async list(connectionString: string, weekStart: string, weekEnd: string, includeDeliveryStates = true): Promise<CalendarEvent[]> {
       const rangeStart = new Date(weekStart);
       const rangeEnd = new Date(weekEnd);
       const db = database(connectionString);
@@ -272,13 +544,15 @@ export const services = {
           exceptionsByEvent.get(record.id) ?? []
         ))
         .sort((left, right) => new Date(left.startsAt).getTime() - new Date(right.startsAt).getTime());
-      return attachDeliveryStates(db, occurrences);
+      return includeDeliveryStates ? attachDeliveryStates(db, occurrences) : occurrences;
     },
 
     async create(connectionString: string, input: CreateEventInput): Promise<CalendarEvent> {
       const [record] = await database(connectionString)
         .insert(calendarEvents)
         .values({
+          labelId: input.labelId,
+          goalId: input.goalId,
           title: input.title,
           description: input.description,
           startsAt: new Date(input.startsAt),
@@ -306,34 +580,64 @@ export const services = {
 
       if (!existing) return null;
 
-      if (input.scope === "occurrence" && existing.recurrenceIntervalWeeks !== null && input.occurrenceStartsAt) {
+      if (
+        input.scope === "occurrence" &&
+        existing.recurrenceIntervalWeeks !== null &&
+        input.occurrenceStartsAt
+      ) {
         const occurrenceStartsAt = new Date(input.occurrenceStartsAt);
+        const [previousException] = await db
+          .select()
+          .from(calendarEventExceptions)
+          .where(
+            and(
+              eq(calendarEventExceptions.eventId, existing.id),
+              eq(calendarEventExceptions.occurrenceStartsAt, occurrenceStartsAt)
+            )
+          )
+          .limit(1);
+        const goalIsOverridden =
+          previousException?.goalIsOverridden === true || input.goalId !== undefined;
+        const labelIsOverridden =
+          previousException?.labelIsOverridden === true || input.labelId !== undefined;
         await queueDeliveryCancellations(db, existing.id, occurrenceStartsAt);
         const [exception] = await db
           .insert(calendarEventExceptions)
           .values({
             eventId: existing.id,
             occurrenceStartsAt,
+            labelIsOverridden,
+            labelId: input.labelId === undefined ? previousException?.labelId : input.labelId,
+            goalIsOverridden,
+            goalId: input.goalId,
             title: input.title,
             description: input.description,
             startsAt: new Date(input.startsAt),
             endsAt: new Date(input.endsAt),
             color: input.color,
             notificationEnabled: input.notificationEnabled,
-            notificationOffsetMinutes: input.notificationEnabled ? input.notificationOffsetMinutes : null,
+            notificationOffsetMinutes: input.notificationEnabled
+              ? input.notificationOffsetMinutes
+              : null,
             notificationMessage: input.notificationEnabled ? input.notificationMessage : null,
             isCancelled: false
           })
           .onConflictDoUpdate({
             target: [calendarEventExceptions.eventId, calendarEventExceptions.occurrenceStartsAt],
             set: {
+              labelIsOverridden,
+              labelId: input.labelId,
+              goalIsOverridden,
+              goalId: input.goalId,
               title: input.title,
               description: input.description,
               startsAt: new Date(input.startsAt),
               endsAt: new Date(input.endsAt),
               color: input.color,
               notificationEnabled: input.notificationEnabled,
-              notificationOffsetMinutes: input.notificationEnabled ? input.notificationOffsetMinutes : null,
+              notificationOffsetMinutes: input.notificationEnabled
+                ? input.notificationOffsetMinutes
+                : null,
               notificationMessage: input.notificationEnabled ? input.notificationMessage : null,
               isCancelled: false,
               updatedAt: new Date()
@@ -344,13 +648,19 @@ export const services = {
         return toExceptionCalendarEvent(existing, exception);
       }
 
+      // A series edit from an overridden occurrence must keep the master's label color
+      // when the request does not explicitly change its label.
+      if (input.labelId === undefined && existing.labelId !== null) {
+        input = { ...input, color: existing.color };
+      }
       const requestedStart = new Date(input.startsAt);
       const requestedEnd = new Date(input.endsAt);
       const duration = requestedEnd.getTime() - requestedStart.getTime();
       let storedStart = requestedStart;
-      const recurrenceTimeZone = input.recurrenceIntervalWeeks === null
-        ? null
-        : input.recurrenceTimeZone ?? existing.recurrenceTimeZone ?? "UTC";
+      const recurrenceTimeZone =
+        input.recurrenceIntervalWeeks === null
+          ? null
+          : (input.recurrenceTimeZone ?? existing.recurrenceTimeZone ?? "UTC");
 
       if (existing.recurrenceIntervalWeeks !== null && input.recurrenceIntervalWeeks !== null) {
         const occurrenceStart = input.occurrenceStartsAt
@@ -366,9 +676,11 @@ export const services = {
 
       const storedEnd = new Date(storedStart.getTime() + duration);
       await queueDeliveryCancellations(db, existing.id);
-      const [record] = await db
+      const updateSeries = db
         .update(calendarEvents)
         .set({
+          labelId: input.labelId,
+          goalId: input.goalId,
           title: input.title,
           description: input.description,
           startsAt: storedStart,
@@ -377,7 +689,9 @@ export const services = {
           recurrenceTimeZone,
           recurrenceEndsOn: input.recurrenceIntervalWeeks === null ? null : input.recurrenceEndsOn,
           notificationEnabled: input.notificationEnabled,
-          notificationOffsetMinutes: input.notificationEnabled ? input.notificationOffsetMinutes : null,
+          notificationOffsetMinutes: input.notificationEnabled
+            ? input.notificationOffsetMinutes
+            : null,
           notificationMessage: input.notificationEnabled ? input.notificationMessage : null,
           color: input.color,
           updatedAt: new Date()
@@ -385,9 +699,74 @@ export const services = {
         .where(eq(calendarEvents.id, input.id))
         .returning();
 
-      await db
-        .delete(calendarEventExceptions)
-        .where(eq(calendarEventExceptions.eventId, input.id));
+      const seriesFieldsChanged =
+        existing.title !== input.title ||
+        existing.description !== input.description ||
+        existing.startsAt.getTime() !== storedStart.getTime() ||
+        existing.endsAt.getTime() !== storedEnd.getTime() ||
+        existing.recurrenceIntervalWeeks !== input.recurrenceIntervalWeeks ||
+        existing.recurrenceTimeZone !== recurrenceTimeZone ||
+        existing.recurrenceEndsOn !== input.recurrenceEndsOn ||
+        existing.notificationEnabled !== input.notificationEnabled ||
+        existing.notificationOffsetMinutes !== input.notificationOffsetMinutes ||
+        existing.notificationMessage !== input.notificationMessage;
+      let record: CalendarEventRecord | undefined;
+      if (seriesFieldsChanged) {
+        const retained =
+          existing.recurrenceIntervalWeeks !== null && input.recurrenceIntervalWeeks !== null
+            ? await db
+                .select()
+                .from(calendarEventExceptions)
+                .where(
+                  and(
+                    eq(calendarEventExceptions.eventId, input.id),
+                    or(
+                      eq(calendarEventExceptions.goalIsOverridden, true),
+                      eq(calendarEventExceptions.labelIsOverridden, true)
+                    )
+                  )
+                )
+            : [];
+        const rebased = rebaseGoalExceptions(
+          existing,
+          retained,
+          storedStart,
+          duration,
+          input.recurrenceIntervalWeeks ?? 1,
+          recurrenceTimeZone ?? "UTC"
+        );
+        const clearExceptions = db
+          .delete(calendarEventExceptions)
+          .where(eq(calendarEventExceptions.eventId, input.id));
+        // Rebase occurrence keys atomically, including shifts onto another occurrence's old key.
+        if (rebased.length) {
+          const [updated] = await db.batch([
+            updateSeries,
+            clearExceptions,
+            db.insert(calendarEventExceptions).values(rebased)
+          ]);
+          record = updated[0];
+        } else {
+          const [updated] = await db.batch([updateSeries, clearExceptions]);
+          record = updated[0];
+        }
+      } else {
+        // Label-only edits preserve occurrence timing and cancellations. Exceptions
+        // without an explicit label choice follow the new series color.
+        const [updated] = await db.batch([
+          updateSeries,
+          db
+            .update(calendarEventExceptions)
+            .set({ color: input.color })
+            .where(
+              and(
+                eq(calendarEventExceptions.eventId, input.id),
+                eq(calendarEventExceptions.labelIsOverridden, false)
+              )
+            )
+        ]);
+        record = updated[0];
+      }
 
       return record
         ? toCalendarEvent(record, { startsAt: requestedStart, endsAt: requestedEnd, index: 0 })
@@ -422,6 +801,8 @@ export const services = {
               startsAt: null,
               endsAt: null,
               color: null,
+              labelId: null,
+              labelIsOverridden: false,
               isCancelled: true,
               updatedAt: new Date()
             }
@@ -590,6 +971,7 @@ export const services = {
       const [record] = await db
         .insert(calendarTodos)
         .values({
+          goalId: input.goalId,
           title: input.title,
           description: input.description,
           estimatedMinutes: input.estimatedMinutes,
@@ -624,6 +1006,7 @@ export const services = {
 
       const values = input.action === "update"
         ? {
+            goalId: input.goalId,
             title: input.title,
             description: input.description,
             estimatedMinutes: input.estimatedMinutes,
@@ -892,7 +1275,32 @@ async function attachDeliveryStates(
   });
 }
 
-function occurrencesInRange(
+/** A series edit resets occurrence fields, but preserves explicit goal and label choices at the same occurrence index. */
+export function rebaseGoalExceptions(
+  previous: CalendarEventRecord,
+  exceptions: CalendarEventExceptionRecord[],
+  startsAt: Date,
+  duration: number,
+  intervalWeeks: number,
+  timeZone: string
+): CalendarEventExceptionRecord[] {
+  const oldZone = validTimeZone(previous.recurrenceTimeZone);
+  const anchorDay = Date.parse(dateKeyInTimeZone(previous.startsAt, oldZone));
+  return exceptions.map((exception) => {
+    const occurrenceDay = Date.parse(dateKeyInTimeZone(exception.occurrenceStartsAt, oldZone));
+    const index = Math.max(0, Math.round((occurrenceDay - anchorDay) / (weekMilliseconds * (previous.recurrenceIntervalWeeks ?? 1))));
+    const occurrenceStartsAt = addWeeksInTimeZone(startsAt, index * intervalWeeks, timeZone);
+    return {
+      ...exception, occurrenceStartsAt, startsAt: occurrenceStartsAt,
+      endsAt: new Date(occurrenceStartsAt.getTime() + duration),
+      title: null, description: null, color: exception.labelIsOverridden ? exception.color : null,
+      notificationEnabled: null, notificationOffsetMinutes: null, notificationMessage: null,
+      updatedAt: new Date()
+    };
+  });
+}
+
+export function occurrencesInRange(
   record: CalendarEventRecord,
   rangeStart: Date,
   rangeEnd: Date,
@@ -959,6 +1367,8 @@ function toExceptionCalendarEvent(record: CalendarEventRecord, exception: Calend
   return {
     ...toCalendarEvent(record, { startsAt, endsAt, index: 0 }),
     occurrenceKey: `${record.id}:${occurrenceStartsAt}`,
+    goalId: exception.goalIsOverridden ? exception.goalId : record.goalId,
+    labelId: exception.labelIsOverridden ? exception.labelId : record.labelId,
     title: exception.title ?? record.title,
     description: exception.description ?? record.description,
     color: exception.color ?? record.color,
@@ -975,97 +1385,6 @@ function toExceptionCalendarEvent(record: CalendarEventRecord, exception: Calend
 
 function eventOverlapsRange(event: CalendarEvent, rangeStart: Date, rangeEnd: Date) {
   return new Date(event.startsAt) < rangeEnd && new Date(event.endsAt) > rangeStart;
-}
-
-type DateParts = {
-  year: number;
-  month: number;
-  day: number;
-  hour: number;
-  minute: number;
-  second: number;
-};
-
-function shiftSeriesAnchor(anchor: Date, occurrence: Date, requested: Date, timeZone: string) {
-  const zone = validTimeZone(timeZone);
-  const occurrenceWallTime = partsAsUtc(zonedParts(occurrence, zone));
-  const requestedWallTime = partsAsUtc(zonedParts(requested, zone));
-  return addWallMilliseconds(anchor, requestedWallTime - occurrenceWallTime, zone);
-}
-
-function addWeeksInTimeZone(date: Date, weeks: number, timeZone: string) {
-  return addWallMilliseconds(date, weeks * weekMilliseconds, timeZone);
-}
-
-function addWallMilliseconds(date: Date, milliseconds: number, timeZone: string) {
-  const wallTime = new Date(partsAsUtc(zonedParts(date, timeZone)) + milliseconds);
-  return zonedTimeToDate({
-    year: wallTime.getUTCFullYear(),
-    month: wallTime.getUTCMonth() + 1,
-    day: wallTime.getUTCDate(),
-    hour: wallTime.getUTCHours(),
-    minute: wallTime.getUTCMinutes(),
-    second: wallTime.getUTCSeconds()
-  }, timeZone);
-}
-
-function zonedTimeToDate(parts: DateParts, timeZone: string) {
-  const targetWallTime = partsAsUtc(parts);
-  let instant = targetWallTime;
-
-  for (let attempt = 0; attempt < 3; attempt += 1) {
-    const representedWallTime = partsAsUtc(zonedParts(new Date(instant), timeZone));
-    instant += targetWallTime - representedWallTime;
-  }
-
-  return new Date(instant);
-}
-
-function zonedParts(date: Date, timeZone: string): DateParts {
-  const formatter = new Intl.DateTimeFormat("en-US", {
-    timeZone,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    hourCycle: "h23"
-  });
-  const values = Object.fromEntries(
-    formatter.formatToParts(date)
-      .filter((part) => part.type !== "literal")
-      .map((part) => [part.type, Number(part.value)])
-  );
-
-  return {
-    year: values.year,
-    month: values.month,
-    day: values.day,
-    hour: values.hour,
-    minute: values.minute,
-    second: values.second
-  };
-}
-
-function partsAsUtc(parts: DateParts) {
-  return Date.UTC(parts.year, parts.month - 1, parts.day, parts.hour, parts.minute, parts.second);
-}
-
-function dateKeyInTimeZone(date: Date, timeZone: string) {
-  const parts = zonedParts(date, timeZone);
-  return `${parts.year}-${String(parts.month).padStart(2, "0")}-${String(parts.day).padStart(2, "0")}`;
-}
-
-function validTimeZone(timeZone: string | null) {
-  if (!timeZone) return "UTC";
-
-  try {
-    new Intl.DateTimeFormat("en-US", { timeZone }).format();
-    return timeZone;
-  } catch {
-    return "UTC";
-  }
 }
 
 export type AppServices = typeof services;

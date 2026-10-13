@@ -1,4 +1,4 @@
-import { businessProcess, notFound, ok, validateWith, value } from "@gotch/nextsignal";
+import { businessProcess, notFound, ok, validateWith, validationFail, value } from "@gotch/nextsignal";
 import type { AppServices, CalendarTodo, CalendarTodoList } from "@/nextsignal/services";
 import {
   createTodoInputSchema,
@@ -29,6 +29,11 @@ export const createTodoBusiness = businessProcess<CreateTodoInput, CalendarTodo,
   auth: () => ok(),
   validate: validateWith(createTodoInputSchema),
   async handle(ctx, input) {
+    input = createTodoInputSchema.parse(input);
+    const linkedGoalId = input.goalId;
+    if (linkedGoalId && !await ctx.services.goals.exists(databaseUrl(ctx), linkedGoalId)) {
+      return validationFail({ message: "Goal not found.", publicMessage: "This goal no longer exists. Choose another goal." });
+    }
     return value(await ctx.services.todos.create(databaseUrl(ctx), input));
   }
 });
@@ -38,6 +43,11 @@ export const updateTodoBusiness = businessProcess<UpdateTodoInput, CalendarTodo[
   auth: () => ok(),
   validate: validateWith(updateTodoInputSchema),
   async handle(ctx, input) {
+    input = updateTodoInputSchema.parse(input);
+    const linkedGoalId = (input.action === "update" && input.goalId);
+    if (linkedGoalId && !await ctx.services.goals.exists(databaseUrl(ctx), linkedGoalId)) {
+      return validationFail({ message: "Goal not found.", publicMessage: "This goal no longer exists. Choose another goal." });
+    }
     const todos = await ctx.services.todos.update(databaseUrl(ctx), input);
     return todos ? value(todos) : notFound("To-do not found.");
   }

@@ -50,6 +50,16 @@ export const createEventBusiness = businessProcess<CreateEventInput, CalendarEve
   auth: () => ok(),
   validate: validateWith(createEventInputSchema),
   async handle(ctx, input) {
+    input = createEventInputSchema.parse(input);
+    if (input.labelId) {
+      const label = await ctx.services.labels.find(databaseUrl(ctx), input.labelId);
+      if (!label) return validationFail({ message: "Label not found.", publicMessage: "This label no longer exists. Choose another label." });
+      input = { ...input, color: label.color };
+    }
+    const linkedGoalId = input.goalId;
+    if (linkedGoalId && !await ctx.services.goals.exists(databaseUrl(ctx), linkedGoalId)) {
+      return validationFail({ message: "Goal not found.", publicMessage: "This goal no longer exists. Choose another goal." });
+    }
     if (notificationTimeIsInvalid(input)) {
       return validationFail({
         message: "Notification time must be in the future.",
@@ -68,8 +78,19 @@ export const updateEventBusiness = businessProcess<UpdateEventInput, CalendarEve
   auth: () => ok(),
   validate: validateWith(updateEventInputSchema),
   async handle(ctx, input) {
+    input = updateEventInputSchema.parse(input);
+    const linkedGoalId = input.goalId;
+    if (linkedGoalId && !await ctx.services.goals.exists(databaseUrl(ctx), linkedGoalId)) {
+      return validationFail({ message: "Goal not found.", publicMessage: "This goal no longer exists. Choose another goal." });
+    }
     const connectionString = databaseUrl(ctx);
     const existing = await ctx.services.events.findOccurrence(connectionString, input.id, input.occurrenceStartsAt);
+    const labelId = input.labelId === undefined ? existing?.labelId : input.labelId;
+    if (labelId) {
+      const label = await ctx.services.labels.find(connectionString, labelId);
+      if (!label) return validationFail({ message: "Label not found.", publicMessage: "This label no longer exists. Choose another label." });
+      input = { ...input, color: label.color };
+    }
     if (notificationTimeIsInvalid(input, existing)) {
       return validationFail({
         message: "Notification time must be in the future.",

@@ -1,5 +1,14 @@
 "use client";
 
+import { GoalSelector } from "@/app/components/goal-selector";
+import { SectionNavigation } from "@/app/components/section-navigation";
+import { EventCardCopy } from "@/app/components/event-card-copy";
+import { goalsRequest } from "@/app/lib/goals-api";
+import { LabelManager, LabelManagerDialog } from "@/app/components/label-manager";
+import { labelsRequest } from "@/app/lib/labels-api";
+import { eventColorHex, eventColorStyle } from "@/app/lib/event-colors";
+import type { CalendarEvent, CalendarGoal, CalendarLabel } from "@/nextsignal/services";
+
 import {
   Bell,
   Check,
@@ -16,6 +25,7 @@ import {
   Pencil,
   Plus,
   ShoppingBag,
+  Tags,
   Trash2,
   TriangleAlert,
   Undo2,
@@ -47,35 +57,12 @@ import {
 } from "@/app/components/todo-backlog";
 import { useEscapeKey } from "@/app/hooks/use-escape-key";
 
-type EventColor = "violet" | "blue" | "coral" | "green" | "amber";
+type EventColor = CalendarEvent["color"];
 type RecurringEventScope = "series" | "occurrence";
-type NotificationState = "disabled" | "pending" | "scheduled" | "sent" | "failed";
+type NotificationState = CalendarEvent["notificationState"];
 
-type CalendarEvent = {
-  id: string;
-  occurrenceKey: string;
-  title: string;
-  description: string;
-  startsAt: string;
-  endsAt: string;
-  recurrenceIntervalWeeks: number | null;
-  recurrenceTimeZone: string | null;
-  recurrenceEndsOn: string | null;
-  notificationEnabled: boolean;
-  notificationOffsetMinutes: number | null;
-  notificationMessage: string | null;
-  notificationAt: string | null;
-  notificationState: NotificationState;
-  recurrenceAnchorStartsAt: string;
-  occurrenceStartsAt: string;
-  isOccurrenceOverride: boolean;
-  color: EventColor;
-  createdAt: string;
-  updatedAt: string;
-};
-
-type EventInput = Pick<CalendarEvent, "title" | "description" | "startsAt" | "endsAt" | "recurrenceIntervalWeeks" | "recurrenceTimeZone" | "recurrenceEndsOn" | "notificationEnabled" | "notificationOffsetMinutes" | "notificationMessage" | "color">
-  & { occurrenceStartsAt?: string };
+type EventInput = Pick<CalendarEvent, "goalId" | "title" | "description" | "startsAt" | "endsAt" | "recurrenceIntervalWeeks" | "recurrenceTimeZone" | "recurrenceEndsOn" | "notificationEnabled" | "notificationOffsetMinutes" | "notificationMessage" | "color">
+  & { occurrenceStartsAt?: string; labelId?: string | null };
 
 type ApiEnvelope<T> = {
   ok: boolean;
@@ -132,7 +119,7 @@ type EditorScopedAction =
   | { kind: "save"; input: EventInput }
   | { kind: "delete" };
 
-type EventClipboard = Pick<CalendarEvent, "title" | "description" | "color" | "notificationEnabled" | "notificationOffsetMinutes" | "notificationMessage"> & {
+type EventClipboard = Pick<CalendarEvent, "labelId" | "goalId" | "title" | "description" | "color" | "notificationEnabled" | "notificationOffsetMinutes" | "notificationMessage"> & {
   durationMinutes: number;
 };
 
@@ -249,13 +236,6 @@ const TODOS_API_PATH = "/schedule/api/todos";
 const TO_BUY_API_PATH = "/schedule/api/to-buy";
 const LOGIN_API_PATH = "/schedule/api/auth/login";
 const DAY_NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
-const COLORS: Array<{ value: EventColor; label: string }> = [
-  { value: "violet", label: "Violet" },
-  { value: "blue", label: "Blue" },
-  { value: "coral", label: "Coral" },
-  { value: "green", label: "Green" },
-  { value: "amber", label: "Amber" }
-];
 const NOTIFICATION_PRESETS = [
   { value: 0, label: "At start" },
   { value: 5, label: "5 minutes before" },
@@ -268,6 +248,25 @@ const NOTIFICATION_PRESETS = [
 ] as const;
 
 export function WeekCalendar() {
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => setMounted(true), []);
+
+  // The week, local date labels, and current-time marker depend on the browser's
+  // clock and time zone. Keep SSR and the first hydration render identical.
+  if (!mounted) {
+    return <main className="schedule-shell" aria-busy="true"><p role="status">Loading calendar…</p></main>;
+  }
+
+  return <MountedWeekCalendar />;
+}
+
+function MountedWeekCalendar() {
+  const [goals, setGoals] = useState<CalendarGoal[]>([]);
+  const [goalNamesError, setGoalNamesError] = useState<string | null>(null);
+  const [labels, setLabels] = useState<CalendarLabel[]>([]);
+  const [labelsLoading, setLabelsLoading] = useState(true);
+  const [labelsError, setLabelsError] = useState<string | null>(null);
+  const [labelsOpen, setLabelsOpen] = useState(false);
   const [weekStartKey, setWeekStartKey] = useState(() => dateKey(startOfWeek(new Date())));
   const [events, setEvents] = useState<CalendarEvent[]>([]);
   const [backlogTodos, setBacklogTodos] = useState<CalendarTodo[]>([]);
@@ -325,6 +324,22 @@ export function WeekCalendar() {
   );
   const visibleDayCount = visibleDays.length;
   const hours = useMemo(() => Array.from({ length: (DAY_END - DAY_START) / 60 + 1 }, (_, index) => DAY_START + index * 60), []);
+  const goalsById = useMemo(() => new Map(goals.map((goal) => [goal.id, goal])), [goals]);
+
+  const loadGoalNames = useCallback(async () => {
+    try {
+      const data = await goalsRequest<{ goals: CalendarGoal[] }>();
+      setGoals(data.goals);
+      setGoalNamesError(null);
+    } catch { setGoalNamesError("Goal names could not be loaded."); }
+  }, []);
+
+  useEffect(() => {
+    void loadGoalNames();
+    const refresh = () => { void loadGoalNames(); };
+    window.addEventListener("focus", refresh);
+    return () => window.removeEventListener("focus", refresh);
+  }, [loadGoalNames]);
 
   const loadEvents = useCallback(async () => {
     setLoading(true);
@@ -347,6 +362,41 @@ export function WeekCalendar() {
       setLoading(false);
     }
   }, [weekStartKey]);
+
+  const loadLabels = useCallback(async () => {
+    setLabelsLoading(true);
+    setLabelsError(null);
+    try {
+      const data = await labelsRequest<{ labels: CalendarLabel[] }>();
+      setLabels(data.labels);
+    } catch (error) { setLabelsError(readError(error)); }
+    finally { setLabelsLoading(false); }
+  }, []);
+
+  useEffect(() => { void loadLabels(); }, [loadLabels]);
+
+  function updateLabels(updated: CalendarLabel[]) {
+    const byId = new Map(updated.map((label) => [label.id, label]));
+    const previousById = new Map(labels.map((label) => [label.id, label]));
+    const refreshEvent = (event: CalendarEvent): CalendarEvent => {
+      if (!event.labelId) return event;
+      const label = byId.get(event.labelId);
+      return { ...event, labelId: label?.id ?? null, color: label?.color ?? previousById.get(event.labelId)?.color ?? event.color };
+    };
+    setLabels(updated);
+    setEvents((current) => current.map(refreshEvent));
+    for (const [key, event] of persistedEventsRef.current) persistedEventsRef.current.set(key, refreshEvent(event));
+    for (const pending of pendingSavesRef.current.values()) {
+      pending.baseline = refreshEvent(pending.baseline);
+      pending.latest = refreshEvent(pending.latest);
+    }
+    setEditor((current) => current?.mode === "edit" ? { ...current, event: refreshEvent(current.event) } : current);
+    setEventClipboard((current) => {
+      if (!current?.labelId) return current;
+      const label = byId.get(current.labelId);
+      return { ...current, labelId: label?.id ?? null, color: label?.color ?? previousById.get(current.labelId)?.color ?? current.color };
+    });
+  }
 
   const loadTodos = useCallback(async () => {
     setTodosLoading(true);
@@ -483,7 +533,7 @@ export function WeekCalendar() {
         void fetch(EVENTS_API_PATH, {
           method: "PATCH",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify(eventPatchBody(pending.latest, pending.scope)),
+          body: JSON.stringify(eventPatchBody(pending.latest, pending.scope, pending.baseline)),
           keepalive: true
         });
       }
@@ -917,6 +967,7 @@ export function WeekCalendar() {
 
     const persist = drag.mode === "resize"
       ? saveTodoFromEditor({
+          goalId: drag.current.goalId,
           title: drag.current.title,
           description: drag.current.description,
           estimatedMinutes: drag.current.estimatedMinutes
@@ -1132,6 +1183,8 @@ export function WeekCalendar() {
       Math.round((new Date(event.endsAt).getTime() - new Date(event.startsAt).getTime()) / 60_000)
     );
     setEventClipboard({
+      labelId: event.labelId,
+      goalId: event.goalId,
       title: event.title,
       description: event.description,
       color: event.color,
@@ -1227,6 +1280,8 @@ export function WeekCalendar() {
       return;
     }
     const input: EventInput = {
+      labelId: eventClipboard.labelId,
+      goalId: eventClipboard.goalId,
       title: eventClipboard.title,
       description: eventClipboard.description,
       startsAt: startsAt.toISOString(),
@@ -1287,7 +1342,7 @@ export function WeekCalendar() {
       const data = await apiRequest<{ event: CalendarEvent }>(EVENTS_API_PATH, {
         method: "PATCH",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify(eventPatchBody(updated, scope))
+        body: JSON.stringify(eventPatchBody(updated, scope, previous))
       });
       persistedEventsRef.current.delete(eventKey);
       persistedEventsRef.current.set(data.event.occurrenceKey, data.event);
@@ -1622,6 +1677,7 @@ export function WeekCalendar() {
           <img className="brand-logo" src="/schedule/goch-mark.svg" alt="" draggable="false" />
         </a>
 
+        <SectionNavigation active="calendar" />
         <div className="calendar-toolbar">
           <h1 aria-label={formatWeekRange(weekStart, days[6])}>
             <span className="week-range-full" aria-hidden="true">{formatWeekRange(weekStart, days[6])}</span>
@@ -1639,6 +1695,7 @@ export function WeekCalendar() {
         </div>
 
         <div className="topbar-utilities">
+          <button className="toolbar-icon-button" type="button" aria-label="Manage labels" title="Manage labels" onClick={() => setLabelsOpen(true)}><Tags size={16} /></button>
           <button
             className={`toolbar-icon-button backlog-toggle${backlogOpen ? " is-active" : ""}`}
             type="button"
@@ -1674,6 +1731,7 @@ export function WeekCalendar() {
       </header>
 
       <section className="calendar-section" id="calendar" aria-label="Weekly calendar">
+        {goalNamesError && <p className="goal-names-error" role="status">{goalNamesError} <button type="button" onClick={() => void loadGoalNames()}>Retry</button></p>}
         {loadError && (
           <div className="connection-banner" role="status">
             <span><span className="connection-dot" /> Database setup needed</span>
@@ -1774,6 +1832,9 @@ export function WeekCalendar() {
                     if (!layout) return null;
                     const isSelected = selectedEventKeys.has(event.occurrenceKey);
                     const notificationState = displayedNotificationState(event, now);
+                    const label = labels.find((item) => item.id === event.labelId);
+                    const goal = event.goalId ? goalsById.get(event.goalId) : undefined;
+                    const colorStyle = event.color.startsWith("#") || label ? eventColorStyle(label?.color ?? event.color) : {};
 
                     return (
                       <button
@@ -1782,20 +1843,18 @@ export function WeekCalendar() {
                         className={`calendar-event event-${event.color}${activeEventKey === event.occurrenceKey ? " is-dragging" : ""}${isSelected ? " is-selected" : ""}${layout.compact ? " is-compact" : ""}`}
                         data-event-key={event.occurrenceKey}
                         aria-pressed={isSelected}
-                        style={{ top: layout.top, height: layout.height, left: dayColumnLeft(layout.dayIndex, visibleDayCount) }}
+                        style={{ ...colorStyle, top: layout.top, height: layout.height, left: dayColumnLeft(layout.dayIndex, visibleDayCount) }}
+                        title={[event.title, label?.name, goal?.title].filter(Boolean).join(" · ")}
                         onPointerDown={(pointerEvent) => startDrag(pointerEvent, event, "move")}
                         onPointerMove={moveDrag}
                         onPointerUp={endDrag}
                         onPointerCancel={cancelDrag}
                         onContextMenu={(mouseEvent) => openEventContextMenu(mouseEvent, event)}
                         onKeyDown={(keyboardEvent) => handleEventKey(event, keyboardEvent)}
-                        aria-label={`${event.title}, ${formatEventTime(event)}.${formatRecurrenceForAria(event)}${formatNotificationForAria(event, notificationState)} Drag to reschedule, press Enter to edit, or right-click to copy.`}
+                        aria-label={`${event.title}${label ? `, ${label.name}` : ""}${goal ? `, goal: ${goal.title}` : ""}, ${formatEventTime(event)}.${formatRecurrenceForAria(event)}${formatNotificationForAria(event, notificationState)} Drag to reschedule, press Enter to edit, or right-click to copy.`}
                       >
                         <span className="event-accent" />
-                        <span className="event-copy">
-                          <strong>{event.title}</strong>
-                          <span data-event-time>{formatEventTime(event)}</span>
-                        </span>
+                        <EventCardCopy title={event.title} time={formatEventTime(event)} label={label?.name} goal={goal} compact={layout.compact} />
                         {event.notificationEnabled && (
                           <span className={`event-notification is-${notificationState}`} aria-hidden="true">
                             <Bell size={13} />
@@ -2098,11 +2157,18 @@ export function WeekCalendar() {
         <EventDialog
           key={editor.mode === "edit" ? editor.event.occurrenceKey : `new-${editor.date}`}
           editor={editor}
+          labels={labels}
+          labelsLoading={labelsLoading}
+          labelsError={labelsError}
+          onRetryLabels={loadLabels}
+          onLabelsChange={updateLabels}
           onClose={() => setEditor(null)}
           onSave={saveFromEditor}
           onDelete={deleteFromEditor}
         />
       )}
+
+      {labelsOpen && <LabelManagerDialog labels={labels} loading={labelsLoading} error={labelsError} onRetry={loadLabels} onChange={updateLabels} onClose={() => setLabelsOpen(false)} />}
 
       {todoEditor && (
         <TodoDialog
@@ -2261,11 +2327,21 @@ function SleepHoursDialog({
 
 function EventDialog({
   editor,
+  labels,
+  labelsLoading,
+  labelsError,
+  onRetryLabels,
+  onLabelsChange,
   onClose,
   onSave,
   onDelete
 }: {
   editor: EditorState;
+  labels: CalendarLabel[];
+  labelsLoading: boolean;
+  labelsError: string | null;
+  onRetryLabels: () => void;
+  onLabelsChange: (labels: CalendarLabel[]) => void;
   onClose: () => void;
   onSave: (input: EventInput, existing?: CalendarEvent, scope?: RecurringEventScope) => Promise<void>;
   onDelete: (event: CalendarEvent, scope?: RecurringEventScope) => Promise<void>;
@@ -2276,11 +2352,16 @@ function EventDialog({
     : newEventDraft(editor.date, editor.startMinutes);
   const [title, setTitle] = useState(initial.title);
   const [description, setDescription] = useState(initial.description);
+  const [goalId, setGoalId] = useState<string | null>(existing?.goalId ?? null);
   const [date, setDate] = useState(initial.date);
   const [time, setTime] = useState(initial.time);
   const [durationHours, setDurationHours] = useState(String(Math.floor(initial.duration / 60)));
   const [durationMinutes, setDurationMinutes] = useState(String(initial.duration % 60));
   const [color, setColor] = useState<EventColor>(initial.color);
+  const [labelId, setLabelId] = useState<string | null>(existing?.labelId ?? null);
+  const [manageLabels, setManageLabels] = useState(false);
+  const [labelsBusy, setLabelsBusy] = useState(false);
+  const selectedLabel = labels.find((label) => label.id === labelId);
   const [recurring, setRecurring] = useState(initial.recurrenceIntervalWeeks !== null);
   const [recurrenceIntervalWeeks, setRecurrenceIntervalWeeks] = useState(initial.recurrenceIntervalWeeks ?? 1);
   const [recurrenceEndMode, setRecurrenceEndMode] = useState<"on" | "never">(
@@ -2300,11 +2381,11 @@ function EventDialog({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [scopedAction, setScopedAction] = useState<EditorScopedAction | null>(null);
-  useEscapeKey(onClose, busy || scopedAction !== null);
+  useEscapeKey(onClose, busy || labelsBusy || scopedAction !== null);
 
   async function submit(formEvent: FormEvent) {
     formEvent.preventDefault();
-    if (!title.trim()) return;
+    if (busy || labelsBusy || !title.trim() || (labelId && !selectedLabel)) return;
     const hours = Number(durationHours);
     const minutes = Number(durationMinutes);
     if (!Number.isInteger(hours) || hours < 0 || hours > 15 || !Number.isInteger(minutes) || minutes < 0 || minutes > 59) {
@@ -2342,6 +2423,8 @@ function EventDialog({
       return;
     }
     const input: EventInput = {
+      ...(!existing || labelId !== existing.labelId ? { labelId } : {}),
+      goalId,
       title: title.trim(),
       description: description.trim(),
       startsAt: start.toISOString(),
@@ -2355,7 +2438,7 @@ function EventDialog({
       notificationOffsetMinutes: notificationEnabled ? selectedNotificationOffset : null,
       notificationMessage: notificationEnabled ? notificationMessage.trim() || null : null,
       ...(existing ? { occurrenceStartsAt: existing.occurrenceStartsAt } : {}),
-      color
+      color: selectedLabel?.color ?? color
     };
 
     if (existing && needsRecurrenceScopeChoice(existing)) {
@@ -2417,13 +2500,13 @@ function EventDialog({
   }
 
   return (
-    <div className="modal-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
+    <div className="modal-backdrop" role="presentation" onMouseDown={(event) => !busy && !labelsBusy && event.target === event.currentTarget && onClose()}>
       <section className="event-dialog" role="dialog" aria-modal="true" aria-labelledby="event-dialog-title">
         <div className="dialog-header">
           <div>
             <h2 id="event-dialog-title">{existing ? "Make a change" : "What are you making time for?"}</h2>
           </div>
-          <button className="icon-button" type="button" onClick={onClose} aria-label="Close"><X size={18} /></button>
+          <button className="icon-button" type="button" onClick={onClose} disabled={busy || labelsBusy} aria-label="Close"><X size={18} /></button>
         </div>
 
         <form onSubmit={submit}>
@@ -2432,6 +2515,7 @@ function EventDialog({
             <input autoFocus value={title} onChange={(event) => setTitle(event.target.value)} placeholder="Deep work, training, coffee…" maxLength={120} />
           </label>
 
+          <GoalSelector value={goalId} onChange={setGoalId} />
           <div className="form-grid">
             <label className="field">
               <span>Day</span>
@@ -2623,29 +2707,94 @@ function EventDialog({
           </label>
 
           <fieldset className="color-field">
-            <legend>Color</legend>
-            <div className="color-options">
-              {COLORS.map((option) => (
-                <label key={option.value} className={`color-option color-${option.value}${color === option.value ? " is-selected" : ""}`}>
-                  <input type="radio" name="color" value={option.value} checked={color === option.value} onChange={() => setColor(option.value)} />
-                  <span />
-                  <small>{option.label}</small>
-                </label>
-              ))}
-            </div>
+            <legend>Label</legend>
+            {labelsLoading ? (
+              <p role="status">Loading labels…</p>
+            ) : labelsError ? (
+              <p role="alert">
+                {labelsError}{" "}
+                <button type="button" onClick={onRetryLabels}>
+                  Retry
+                </button>
+              </p>
+            ) : (
+              <>
+                <div className="color-options">
+                  <label className={`color-option${labelId === null ? " is-selected" : ""}`}>
+                    <input
+                      type="radio"
+                      name="event-label"
+                      checked={labelId === null}
+                      onChange={() => {
+                        setColor(selectedLabel?.color ?? color);
+                        setLabelId(null);
+                      }}
+                    />
+                    <span style={{ background: eventColorHex(color) }} />
+                    <small>No label</small>
+                  </label>
+                  {labels.map((label) => (
+                    <label
+                      key={label.id}
+                      className={`color-option${labelId === label.id ? " is-selected" : ""}`}
+                    >
+                      <input
+                        type="radio"
+                        name="event-label"
+                        value={label.id}
+                        checked={labelId === label.id}
+                        onChange={() => {
+                          setLabelId(label.id);
+                          setColor(label.color);
+                        }}
+                      />
+                      <span style={{ background: label.color }} />
+                      <small>{label.name}</small>
+                    </label>
+                  ))}
+                </div>
+                {labelId && !selectedLabel && (
+                  <p role="alert">The selected label is unavailable. Choose another label or No label.</p>
+                )}
+              </>
+            )}
+            <button
+              className="label-manage-toggle"
+              type="button"
+              disabled={labelsBusy}
+              onClick={() => setManageLabels(!manageLabels)}
+            >
+              <Tags size={14} /> {manageLabels ? "Close label manager" : "Manage labels"}
+            </button>
+            {manageLabels && (
+              <LabelManager
+                labels={labels}
+                loading={labelsLoading}
+                error={labelsError}
+                onRetry={onRetryLabels}
+                onBusyChange={setLabelsBusy}
+                onChange={(updated) => {
+                  if (labelId && !updated.some((label) => label.id === labelId)) {
+                    setColor(selectedLabel?.color ?? color);
+                    setLabelId(null);
+                  }
+                  onLabelsChange(updated);
+                }}
+              />
+            )}
           </fieldset>
 
           {error && <p className="form-error" role="alert">{error}</p>}
 
           <div className="dialog-actions">
             {existing ? (
-              <button className="delete-button" type="button" onClick={() => void remove()} disabled={busy}>
+              <button className="delete-button" type="button" onClick={() => void remove()} disabled={busy || labelsBusy}>
                 <Trash2 size={16} /> Delete
               </button>
             ) : <span />}
             <div>
-              <button className="secondary-button" type="button" onClick={onClose} disabled={busy}>Cancel</button>
-              <button className="primary-button" type="submit" disabled={busy || !title.trim()}>{busy ? "Saving…" : existing ? "Save changes" : "Create event"}</button>
+              <button className="secondary-button" type="button" onClick={onClose} disabled={busy || labelsBusy}>Cancel</button>
+              <button className="primary-button" type="submit" disabled={busy || labelsBusy || !title.trim() || Boolean(labelId && !selectedLabel)}>{busy ? "Saving…" : existing ? "Save changes" : "Create event"}</button>
             </div>
           </div>
         </form>
@@ -2727,9 +2876,11 @@ async function apiRequest<T>(url: string, init?: RequestInit): Promise<T> {
   return payload.data;
 }
 
-function eventPatchBody(event: CalendarEvent, scope: RecurringEventScope) {
+function eventPatchBody(event: CalendarEvent, scope: RecurringEventScope, baseline: CalendarEvent) {
   return {
     id: event.id,
+    ...(event.labelId !== baseline.labelId ? { labelId: event.labelId } : {}),
+    ...(event.goalId !== baseline.goalId ? { goalId: event.goalId } : {}),
     title: event.title,
     description: event.description,
     startsAt: event.startsAt,
@@ -2751,7 +2902,9 @@ function needsRecurrenceScopeChoice(event: CalendarEvent) {
 }
 
 function hasSameEditableValues(left: CalendarEvent, right: CalendarEvent) {
-  return left.title === right.title
+  return left.labelId === right.labelId
+    && left.goalId === right.goalId
+    && left.title === right.title
     && left.description === right.description
     && left.startsAt === right.startsAt
     && left.endsAt === right.endsAt

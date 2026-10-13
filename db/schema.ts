@@ -3,10 +3,44 @@ import { boolean, check, date, index, integer, pgTable, text, timestamp, uniqueI
 
 export const eventColors = ["violet", "blue", "coral", "green", "amber"] as const;
 export type EventColor = (typeof eventColors)[number];
+export type CalendarEventColor = EventColor | `#${string}`;
+
+export const calendarLabels = pgTable("calendar_labels", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  name: text("name").notNull(),
+  color: text("color").$type<`#${string}`>().notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true, mode: "date" }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true, mode: "date" }).notNull().defaultNow()
+}, (label) => [
+  check("calendar_labels_valid_name", sql`length(trim(${label.name})) between 1 and 60`),
+  check("calendar_labels_valid_color", sql`${label.color} ~ '^#[0-9a-fA-F]{6}$'`)
+]);
+
+export type CalendarLabelRecord = typeof calendarLabels.$inferSelect;
+
+export const calendarGoals = pgTable("calendar_goals", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  title: text("title").notNull(),
+  description: text("description").notNull().default(""),
+  startsOn: date("starts_on"),
+  endsOn: date("ends_on"),
+  timeZone: text("time_zone").notNull(),
+  color: text("color").$type<EventColor>().notNull().default("violet"),
+  achieved: boolean("achieved").notNull().default(false),
+  createdAt: timestamp("created_at", { withTimezone: true, mode: "date" }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true, mode: "date" }).notNull().defaultNow()
+}, (goal) => [
+  check("calendar_goals_valid_range", sql`(${goal.startsOn} is null and ${goal.endsOn} is null) or (${goal.startsOn} is not null and ${goal.endsOn} is not null and ${goal.endsOn} >= ${goal.startsOn})`),
+  check("calendar_goals_valid_color", sql`${goal.color} in ('violet', 'blue', 'coral', 'green', 'amber')`)
+]);
+
+export type CalendarGoalRecord = typeof calendarGoals.$inferSelect;
 
 export const calendarEvents = pgTable(
   "calendar_events",
   {
+    labelId: uuid("label_id").references(() => calendarLabels.id, { onDelete: "set null" }),
+    goalId: uuid("goal_id").references(() => calendarGoals.id, { onDelete: "set null" }),
     id: uuid("id").defaultRandom().primaryKey(),
     title: text("title").notNull(),
     description: text("description").notNull().default(""),
@@ -18,11 +52,12 @@ export const calendarEvents = pgTable(
     notificationEnabled: boolean("notification_enabled").notNull().default(false),
     notificationOffsetMinutes: integer("notification_offset_minutes"),
     notificationMessage: text("notification_message"),
-    color: text("color").$type<EventColor>().notNull().default("violet"),
+    color: text("color").$type<CalendarEventColor>().notNull().default("violet"),
     createdAt: timestamp("created_at", { withTimezone: true, mode: "date" }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true, mode: "date" }).notNull().defaultNow()
   },
   (event) => [
+    index("calendar_events_goal_id_idx").on(event.goalId),
     index("calendar_events_starts_at_idx").on(event.startsAt),
     check("calendar_events_valid_range", sql`${event.endsAt} > ${event.startsAt}`),
     check(
@@ -37,7 +72,7 @@ export const calendarEvents = pgTable(
       "calendar_events_valid_notification",
       sql`(${event.notificationEnabled} and ${event.notificationOffsetMinutes} between 0 and 10080) or (not ${event.notificationEnabled} and ${event.notificationOffsetMinutes} is null)`
     ),
-    check("calendar_events_valid_color", sql`${event.color} in ('violet', 'blue', 'coral', 'green', 'amber')`)
+    check("calendar_events_valid_color", sql`${event.color} in ('violet', 'blue', 'coral', 'green', 'amber') or ${event.color} ~ '^#[0-9a-fA-F]{6}$'`)
   ]
 );
 
@@ -46,6 +81,10 @@ export type CalendarEventRecord = typeof calendarEvents.$inferSelect;
 export const calendarEventExceptions = pgTable(
   "calendar_event_exceptions",
   {
+    labelId: uuid("label_id").references(() => calendarLabels.id, { onDelete: "set null" }),
+    labelIsOverridden: boolean("label_is_overridden").notNull().default(false),
+    goalId: uuid("goal_id").references(() => calendarGoals.id, { onDelete: "set null" }),
+    goalIsOverridden: boolean("goal_is_overridden").notNull().default(false),
     id: uuid("id").defaultRandom().primaryKey(),
     eventId: uuid("event_id").notNull().references(() => calendarEvents.id, { onDelete: "cascade" }),
     occurrenceStartsAt: timestamp("occurrence_starts_at", { withTimezone: true, mode: "date" }).notNull(),
@@ -53,7 +92,7 @@ export const calendarEventExceptions = pgTable(
     description: text("description"),
     startsAt: timestamp("starts_at", { withTimezone: true, mode: "date" }),
     endsAt: timestamp("ends_at", { withTimezone: true, mode: "date" }),
-    color: text("color").$type<EventColor>(),
+    color: text("color").$type<CalendarEventColor>(),
     notificationEnabled: boolean("notification_enabled"),
     notificationOffsetMinutes: integer("notification_offset_minutes"),
     notificationMessage: text("notification_message"),
@@ -62,6 +101,7 @@ export const calendarEventExceptions = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true, mode: "date" }).notNull().defaultNow()
   },
   (exception) => [
+    index("calendar_event_exceptions_goal_id_idx").on(exception.goalId),
     uniqueIndex("calendar_event_exceptions_occurrence_idx").on(exception.eventId, exception.occurrenceStartsAt),
     index("calendar_event_exceptions_starts_at_idx").on(exception.startsAt),
     check(
@@ -70,7 +110,7 @@ export const calendarEventExceptions = pgTable(
     ),
     check(
       "calendar_event_exceptions_valid_color",
-      sql`${exception.color} is null or ${exception.color} in ('violet', 'blue', 'coral', 'green', 'amber')`
+      sql`${exception.color} is null or ${exception.color} in ('violet', 'blue', 'coral', 'green', 'amber') or ${exception.color} ~ '^#[0-9a-fA-F]{6}$'`
     ),
     check(
       "calendar_event_exceptions_valid_notification",
@@ -115,6 +155,7 @@ export type CalendarEventNotificationDeliveryRecord = typeof calendarEventNotifi
 export const calendarTodos = pgTable(
   "calendar_todos",
   {
+    goalId: uuid("goal_id").references(() => calendarGoals.id, { onDelete: "set null" }),
     id: uuid("id").defaultRandom().primaryKey(),
     title: text("title").notNull(),
     description: text("description").notNull().default(""),
@@ -125,6 +166,7 @@ export const calendarTodos = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true, mode: "date" }).notNull().defaultNow()
   },
   (todo) => [
+    index("calendar_todos_goal_id_idx").on(todo.goalId),
     index("calendar_todos_scheduled_at_idx").on(todo.scheduledAt),
     index("calendar_todos_sort_order_idx").on(todo.sortOrder),
     check(
