@@ -1,4 +1,10 @@
 {
+  "mcp": {
+    "access_token": "",
+    "time_zone": "Europe/Skopje",
+    "allowed_hosts": ["gocheski.com", "localhost", "127.0.0.1"],
+    "allowed_origins": []
+  },
   "database": {
     "url": ""
   },

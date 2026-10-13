@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 const dir = await mkdtemp(join(tmpdir(), "schedule-tests-"));
 try {
-  const entries = ["goals.test", "calendar-hydration.test", "labels.test"];
+  const entries = ["goals.test", "calendar-hydration.test", "labels.test", "mcp.test"];
   await build({
     entryPoints: entries.map((name) => `tests/${name}.ts`),
     outdir: dir,

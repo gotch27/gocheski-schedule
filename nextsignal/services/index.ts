@@ -471,6 +471,15 @@ export const services = {
     }
   },
   events: {
+    async findSeries(connectionString: string, id: string): Promise<CalendarEvent | null> {
+      const [record] = await database(connectionString)
+        .select()
+        .from(calendarEvents)
+        .where(eq(calendarEvents.id, id))
+        .limit(1);
+      return record ? toCalendarEvent(record) : null;
+    },
+
     async list(connectionString: string, weekStart: string, weekEnd: string, includeDeliveryStates = true): Promise<CalendarEvent[]> {
       const rangeStart = new Date(weekStart);
       const rangeEnd = new Date(weekEnd);
@@ -940,6 +949,15 @@ export const services = {
   },
 
   todos: {
+    async find(connectionString: string, id: string): Promise<CalendarTodo | null> {
+      const [record] = await database(connectionString)
+        .select()
+        .from(calendarTodos)
+        .where(eq(calendarTodos.id, id))
+        .limit(1);
+      return record ? toCalendarTodo(record) : null;
+    },
+
     async list(connectionString: string, weekStart: string, weekEnd: string): Promise<CalendarTodoList> {
       const db = database(connectionString);
       const rangeStart = new Date(weekStart);
@@ -1033,6 +1051,15 @@ export const services = {
   },
 
   toBuyItems: {
+    async find(connectionString: string, id: string): Promise<CalendarToBuyItem | null> {
+      const [record] = await database(connectionString)
+        .select()
+        .from(calendarToBuyItems)
+        .where(eq(calendarToBuyItems.id, id))
+        .limit(1);
+      return record ? toCalendarToBuyItem(record) : null;
+    },
+
     async list(connectionString: string, weekStart: string, weekEnd: string): Promise<CalendarToBuyItemList> {
       const db = database(connectionString);
       const rangeStart = new Date(weekStart);

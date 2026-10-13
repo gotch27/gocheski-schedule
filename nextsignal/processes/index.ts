@@ -62,8 +62,10 @@ import {
   listToBuyItemsBusiness,
   updateToBuyItemBusiness
 } from "@/nextsignal/processes/business/to-buy";
+import { agentProcesses } from "@/nextsignal/processes/business/agent-calendar";
 
 export const processes = [
+  ...agentProcesses,
   listLabelsApi,
   createLabelsApi,
   updateLabelsApi,
